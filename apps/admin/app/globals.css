@@ -1,0 +1,80 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * HSSND Content Factory — global theme.
+ *
+ * Single dark theme for now (this is an internal ops tool, not a
+ * public-facing product with light/dark preference). Values are HSL
+ * triplets (no hsl() wrapper) so Tailwind can compose them with opacity
+ * modifiers, e.g. `border-signal/30`.
+ */
+:root {
+  --void: 230 35% 5%; /* app background */
+  --surface: 230 28% 10%; /* glass panel base (used with alpha) */
+  --paper: 220 40% 96%; /* primary text */
+  --mist: 222 14% 62%; /* muted text */
+  --border: 220 20% 24%; /* hairline borders (used with alpha) */
+
+  --signal: 189 94% 55%; /* cyan — generation / activity */
+  --flow: 217 91% 60%; /* blue — data movement / pipelines */
+  --pulse: 258 89% 66%; /* violet — scheduling / publish heartbeat */
+
+  --amber: 43 96% 58%; /* needs-attention status */
+  --success: 160 84% 42%; /* positive status */
+  --danger: 350 89% 60%; /* negative status */
+}
+
+* {
+  border-color: hsl(var(--border) / 0.6);
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: hsl(var(--void));
+  color: hsl(var(--paper));
+  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background-color: hsl(var(--signal) / 0.3);
+  color: hsl(var(--paper));
+}
+
+/* Visible keyboard focus everywhere — glass UI needs this more than most,
+   since low-contrast surfaces make the default outline hard to see. */
+:focus-visible {
+  outline: 2px solid hsl(var(--signal) / 0.8);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Thin, unobtrusive scrollbars that fit the dark/glass aesthetic. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--border)) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: hsl(var(--border));
+  border-radius: 999px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

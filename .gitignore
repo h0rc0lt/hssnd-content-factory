@@ -1,0 +1,23 @@
+# Defense-in-depth root gitignore — apps/admin/.gitignore covers the Next.js
+# app specifically; this catches the same categories anywhere else in the
+# monorepo as more apps/dirs (n8n/, openclaw/) are added later.
+
+# dependencies / build output
+**/node_modules
+**/.next/
+**/out/
+**/build/
+**/dist/
+
+# env files — never commit secrets, anywhere in this repo
+**/.env
+**/.env.*.local
+**/.env.local
+
+# OS/editor
+.DS_Store
+*.pem
+
+# typescript
+**/*.tsbuildinfo
+**/next-env.d.ts
