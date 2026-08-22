@@ -29,12 +29,17 @@ export const STATUS_TOKEN = {
   running: "flow",
   queued: "flow",
   scheduled: "pulse",
+  training: "flow",
+  processing: "flow",
+  uploaded: "flow",
   // needs attention
   pending_approval: "amber",
   raw: "amber",
   draft: "mist",
   paused: "mist",
   partial: "amber",
+  used_in_training: "mist",
+  ready: "success",
   // negative
   rejected: "danger",
   failed: "danger",

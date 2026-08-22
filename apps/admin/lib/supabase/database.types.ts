@@ -8,6 +8,14 @@
  * match the schema actually applied in migration `init`, field for field.
  * Regenerate this file for real the first time the Supabase CLI/tool is
  * available — do not hand-edit further once that's possible.
+ *
+ * Phase 2C fix: added `Relationships: []` to every table and
+ * `Views`/`Functions` at the schema level. Without these, this file didn't
+ * satisfy postgrest-js's `GenericSchema` contract, so `.insert()`/`.update()`
+ * silently typed their argument as `never` — invisible until Phase 2C's
+ * lib/data/lora-pipeline.ts became the first write path in the app.
+ * `.select()` calls were unaffected, which is why this went undetected
+ * through Phase 2B.
  */
 
 export type Json =
@@ -45,6 +53,7 @@ export interface Database {
           updated_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["characters"]["Insert"]>;
+        Relationships: [];
       };
       media_assets: {
         Row: {
@@ -88,6 +97,7 @@ export interface Database {
           updated_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["media_assets"]["Insert"]>;
+        Relationships: [];
       };
       reference_sets: {
         Row: {
@@ -111,6 +121,7 @@ export interface Database {
           updated_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["reference_sets"]["Insert"]>;
+        Relationships: [];
       };
       reference_set_items: {
         Row: {
@@ -128,6 +139,7 @@ export interface Database {
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["reference_set_items"]["Insert"]>;
+        Relationships: [];
       };
       motion_templates: {
         Row: {
@@ -155,6 +167,7 @@ export interface Database {
           updated_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["motion_templates"]["Insert"]>;
+        Relationships: [];
       };
       platform_accounts: {
         Row: {
@@ -180,6 +193,7 @@ export interface Database {
           updated_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["platform_accounts"]["Insert"]>;
+        Relationships: [];
       };
       workflow_definitions: {
         Row: {
@@ -205,6 +219,7 @@ export interface Database {
           updated_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["workflow_definitions"]["Insert"]>;
+        Relationships: [];
       };
       workflow_runs: {
         Row: {
@@ -232,6 +247,7 @@ export interface Database {
           finished_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["workflow_runs"]["Insert"]>;
+        Relationships: [];
       };
       scheduled_posts: {
         Row: {
@@ -259,6 +275,7 @@ export interface Database {
           updated_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["scheduled_posts"]["Insert"]>;
+        Relationships: [];
       };
       scheduled_post_targets: {
         Row: {
@@ -282,6 +299,7 @@ export interface Database {
           error?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["scheduled_post_targets"]["Insert"]>;
+        Relationships: [];
       };
       approval_events: {
         Row: {
@@ -303,6 +321,7 @@ export interface Database {
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["approval_events"]["Insert"]>;
+        Relationships: [];
       };
       captions_history: {
         Row: {
@@ -328,6 +347,7 @@ export interface Database {
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["captions_history"]["Insert"]>;
+        Relationships: [];
       };
       agent_action_log: {
         Row: {
@@ -351,7 +371,96 @@ export interface Database {
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["agent_action_log"]["Insert"]>;
+        Relationships: [];
+      };
+      character_uploads: {
+        Row: {
+          id: string;
+          character_id: string;
+          storage_path: string;
+          file_name: string;
+          mime_type: string;
+          file_size_bytes: number | null;
+          status: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          character_id: string;
+          storage_path: string;
+          file_name: string;
+          mime_type: string;
+          file_size_bytes?: number | null;
+          status?: string;
+          created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["character_uploads"]["Insert"]>;
+        Relationships: [];
+      };
+      lora_models: {
+        Row: {
+          id: string;
+          character_id: string;
+          status: string;
+          fal_request_id: string | null;
+          base_model: string;
+          trigger_word: string | null;
+          weights_url: string | null;
+          training_started_at: string | null;
+          training_completed_at: string | null;
+          error: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          character_id: string;
+          status?: string;
+          fal_request_id?: string | null;
+          base_model?: string;
+          trigger_word?: string | null;
+          weights_url?: string | null;
+          training_started_at?: string | null;
+          training_completed_at?: string | null;
+          error?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["lora_models"]["Insert"]>;
+        Relationships: [];
+      };
+      generation_jobs: {
+        Row: {
+          id: string;
+          character_id: string;
+          lora_model_id: string | null;
+          prompt_key: string;
+          prompt_text: string;
+          status: string;
+          fal_request_id: string | null;
+          result_media_asset_id: string | null;
+          error: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          character_id: string;
+          lora_model_id?: string | null;
+          prompt_key: string;
+          prompt_text: string;
+          status?: string;
+          fal_request_id?: string | null;
+          result_media_asset_id?: string | null;
+          error?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["generation_jobs"]["Insert"]>;
+        Relationships: [];
       };
     };
+    Views: Record<string, never>;
+    Functions: Record<string, never>;
   };
 }

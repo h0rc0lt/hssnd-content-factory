@@ -1,0 +1,1888 @@
+diff --git a/apps/admin/.env.example b/apps/admin/.env.example
+index 51a08aa..e61c524 100644
+--- a/apps/admin/.env.example
++++ b/apps/admin/.env.example
+@@ -17,3 +17,8 @@ SUPABASE_URL=https://ybflevlwyrwcbbsgeera.supabase.co
+ # Supabase Dashboard > Project Settings > API > service_role key.
+ # Never committed, never pasted into chat, never seen by Claude.
+ SUPABASE_SERVICE_ROLE_KEY=
++
++# This IS a secret — used server-only in app/api/lora/train/route.ts to
++# submit LoRA training jobs to fal.ai. Get it from fal.ai Dashboard >
++# Keys. Never committed, never pasted into chat, never seen by Claude.
++FAL_KEY=
+diff --git a/apps/admin/app/(dashboard)/characters/new/page.tsx b/apps/admin/app/(dashboard)/characters/new/page.tsx
+new file mode 100644
+index 0000000..5361d96
+--- /dev/null
++++ b/apps/admin/app/(dashboard)/characters/new/page.tsx
+@@ -0,0 +1,17 @@
++import { NewCharacterForm } from "@/components/characters/NewCharacterForm";
++
++export default function NewCharacterPage() {
++  return (
++    <div className="mx-auto max-w-2xl space-y-6">
++      <div>
++        <h1 className="font-display text-2xl font-semibold text-paper">New character</h1>
++        <p className="mt-1 text-sm text-mist">
++          Add a character record and its initial reference images. LoRA training is a
++          separate step, started explicitly once uploads are in.
++        </p>
++      </div>
++
++      <NewCharacterForm />
++    </div>
++  );
++}
+diff --git a/apps/admin/app/(dashboard)/characters/page.tsx b/apps/admin/app/(dashboard)/characters/page.tsx
+index 92c7efe..f7aa35c 100644
+--- a/apps/admin/app/(dashboard)/characters/page.tsx
++++ b/apps/admin/app/(dashboard)/characters/page.tsx
+@@ -1,8 +1,9 @@
+ import { Suspense } from "react";
+-import { Users } from "lucide-react";
++import Link from "next/link";
++import { Users, Plus } from "lucide-react";
+ import { CharacterGrid, CharacterGridSkeleton } from "@/components/characters/CharacterGrid";
+ import { EmptyState } from "@/components/states/EmptyState";
+-import { Button } from "@/components/ui/button";
++import { buttonVariants } from "@/components/ui/button";
+ import { getCharacters } from "@/lib/data/characters";
+ 
+ // See app/(dashboard)/page.tsx for why this route is forced dynamic.
+@@ -11,14 +12,20 @@ export const dynamic = "force-dynamic";
+ export default function CharactersPage() {
+   return (
+     <div className="space-y-6">
+-      <div>
+-        <h1 className="font-display text-2xl font-semibold text-paper">Characters</h1>
+-        <p className="mt-1 max-w-2xl text-sm text-mist">
+-          Every AI influencer profile in the system. Each card opens an
+-          identical Character Studio — reference sets, generation workflows,
+-          and scheduling work the same way no matter which character you
+-          pick.
+-        </p>
++      <div className="flex items-start justify-between gap-4">
++        <div>
++          <h1 className="font-display text-2xl font-semibold text-paper">Characters</h1>
++          <p className="mt-1 max-w-2xl text-sm text-mist">
++            Every AI influencer profile in the system. Each card opens an
++            identical Character Studio — reference sets, generation workflows,
++            and scheduling work the same way no matter which character you
++            pick.
++          </p>
++        </div>
++        <Link href="/characters/new" className={buttonVariants({ size: "sm" })}>
++          <Plus className="h-4 w-4" strokeWidth={1.75} />
++          New character
++        </Link>
+       </div>
+ 
+       <Suspense fallback={<CharacterGridSkeleton />}>
+@@ -38,9 +45,9 @@ async function CharactersGridSection() {
+         title="No characters yet"
+         description="Add a character record to see it appear here — every field in the Studio works the same for the first character as the fiftieth."
+         action={
+-          <Button disabled size="sm" title="Character creation lands in Phase 2C">
++          <Link href="/characters/new" className={buttonVariants({ size: "sm" })}>
+             New character
+-          </Button>
++          </Link>
+         }
+       />
+     );
+diff --git a/apps/admin/app/api/characters/route.ts b/apps/admin/app/api/characters/route.ts
+new file mode 100644
+index 0000000..af668ab
+--- /dev/null
++++ b/apps/admin/app/api/characters/route.ts
+@@ -0,0 +1,75 @@
++import { NextRequest, NextResponse } from "next/server";
++import { randomUUID } from "crypto";
++import { createCharacter, createCharacterUpload } from "@/lib/data/lora-pipeline";
++import { getSupabaseServerClient } from "@/lib/supabase/server";
++
++/**
++ * POST /api/characters
++ *
++ * Creates a character record and uploads any attached reference images to
++ * Supabase Storage (`character-media` bucket), recording one
++ * `character_uploads` row per file. Does not touch `lora_models` — training
++ * is a separate explicit step (see /api/lora/train), never triggered here.
++ */
++export async function POST(request: NextRequest) {
++  try {
++    const formData = await request.formData();
++    const name = String(formData.get("name") ?? "").trim();
++    const slug = String(formData.get("slug") ?? "").trim();
++    const shortBio = String(formData.get("shortBio") ?? "").trim();
++    const files = formData.getAll("files").filter((f): f is File => f instanceof File);
++
++    if (!name || !slug) {
++      return NextResponse.json({ error: "Name and slug are required." }, { status: 400 });
++    }
++
++    let character;
++    try {
++      character = await createCharacter({ name, slug, shortBio: shortBio || undefined });
++    } catch (err) {
++      const message = err instanceof Error ? err.message : "Failed to create character.";
++      const friendly = message.includes("duplicate key")
++        ? `A character with slug "${slug}" already exists.`
++        : message;
++      return NextResponse.json({ error: friendly }, { status: 400 });
++    }
++
++    const supabase = getSupabaseServerClient();
++    let uploadCount = 0;
++    const failedFiles: string[] = [];
++
++    for (const file of files) {
++      const ext = file.name.includes(".") ? file.name.split(".").pop() : "bin";
++      const storagePath = `${character.id}/uploads/${randomUUID()}.${ext}`;
++      const arrayBuffer = await file.arrayBuffer();
++
++      const { error: uploadError } = await supabase.storage
++        .from("character-media")
++        .upload(storagePath, arrayBuffer, {
++          contentType: file.type || "application/octet-stream",
++        });
++
++      if (uploadError) {
++        // The character record is already saved at this point — a partial
++        // upload failure is recoverable (re-upload later), losing the
++        // character record on a storage hiccup would not be.
++        failedFiles.push(file.name);
++        continue;
++      }
++
++      await createCharacterUpload({
++        characterId: character.id,
++        storagePath,
++        fileName: file.name,
++        mimeType: file.type || "application/octet-stream",
++        fileSizeBytes: file.size,
++      });
++      uploadCount += 1;
++    }
++
++    return NextResponse.json({ character, uploadCount, failedFiles });
++  } catch (err) {
++    const message = err instanceof Error ? err.message : "Unexpected error.";
++    return NextResponse.json({ error: message }, { status: 500 });
++  }
++}
+diff --git a/apps/admin/app/api/lora/train/route.ts b/apps/admin/app/api/lora/train/route.ts
+new file mode 100644
+index 0000000..20cceb6
+--- /dev/null
++++ b/apps/admin/app/api/lora/train/route.ts
+@@ -0,0 +1,90 @@
++import { NextRequest, NextResponse } from "next/server";
++import { fal } from "@fal-ai/client";
++import JSZip from "jszip";
++import {
++  createLoraModel,
++  updateLoraModel,
++  getUploadsForCharacter,
++} from "@/lib/data/lora-pipeline";
++import { getSupabaseServerClient } from "@/lib/supabase/server";
++
++/**
++ * POST /api/lora/train
++ *
++ * The explicit "Start training" action — never called automatically after
++ * upload (see NewCharacterForm). Submits to fal.ai's
++ * `fal-ai/flux-lora-fast-training` queue, whose `images_data_url` input
++ * expects a single archive rather than individual file URLs (confirmed
++ * against fal's own API docs), so this zips the character's uploaded
++ * reference images server-side and hands it a base64 data URL of the zip.
++ *
++ * This submits and records the `fal_request_id`, then stops — there is no
++ * training-poll cron in this checkpoint yet, so `lora_models.status` stays
++ * "training" until a follow-up phase adds polling (or a webhook receiver).
++ * Flagged explicitly, not silently left half-wired.
++ */
++export async function POST(request: NextRequest) {
++  try {
++    const { characterId } = await request.json();
++    if (!characterId) {
++      return NextResponse.json({ error: "characterId is required." }, { status: 400 });
++    }
++
++    const falKey = process.env.FAL_KEY;
++    if (!falKey) {
++      return NextResponse.json(
++        { error: "FAL_KEY is not configured on the server." },
++        { status: 500 }
++      );
++    }
++    fal.config({ credentials: falKey });
++
++    const uploads = await getUploadsForCharacter(characterId);
++    if (uploads.length === 0) {
++      return NextResponse.json(
++        { error: "This character has no uploaded reference images yet." },
++        { status: 400 }
++      );
++    }
++
++    const supabase = getSupabaseServerClient();
++    const zip = new JSZip();
++    for (const upload of uploads) {
++      const { data, error } = await supabase.storage
++        .from("character-media")
++        .download(upload.storagePath);
++      if (error || !data) {
++        return NextResponse.json(
++          { error: `Failed to read ${upload.fileName} from storage: ${error?.message}` },
++          { status: 500 }
++        );
++      }
++      zip.file(upload.fileName, await data.arrayBuffer());
++    }
++    const zipBase64 = await zip.generateAsync({ type: "base64" });
++    const imagesDataUrl = `data:application/zip;base64,${zipBase64}`;
++
++    const loraModel = await createLoraModel(characterId);
++
++    try {
++      const { request_id } = await fal.queue.submit("fal-ai/flux-lora-fast-training", {
++        input: { images_data_url: imagesDataUrl },
++      });
++
++      const updated = await updateLoraModel(loraModel.id, {
++        status: "training",
++        falRequestId: request_id,
++        trainingStartedAt: new Date().toISOString(),
++      });
++
++      return NextResponse.json({ loraModel: updated });
++    } catch (falErr) {
++      const message = falErr instanceof Error ? falErr.message : "fal.ai submission failed.";
++      await updateLoraModel(loraModel.id, { status: "failed", error: message });
++      return NextResponse.json({ error: message }, { status: 502 });
++    }
++  } catch (err) {
++    const message = err instanceof Error ? err.message : "Unexpected error.";
++    return NextResponse.json({ error: message }, { status: 500 });
++  }
++}
+diff --git a/apps/admin/components/characters/NewCharacterForm.tsx b/apps/admin/components/characters/NewCharacterForm.tsx
+new file mode 100644
+index 0000000..31557c0
+--- /dev/null
++++ b/apps/admin/components/characters/NewCharacterForm.tsx
+@@ -0,0 +1,288 @@
++"use client";
++
++import { useRouter } from "next/navigation";
++import { useState } from "react";
++import { UploadCloud, ImageOff, Sparkles, X } from "lucide-react";
++import { DashboardCard } from "@/components/shell/DashboardCard";
++import { Button } from "@/components/ui/button";
++import { Input } from "@/components/ui/input";
++import { Label } from "@/components/ui/label";
++import { Textarea } from "@/components/ui/textarea";
++import { StatusBadge } from "@/components/ui/badge";
++import { ErrorState } from "@/components/states/ErrorState";
++
++/**
++ * Character creation + reference upload — Phase 2C.
++ *
++ * Two explicit steps, matching the reviewed plan: (1) create the character
++ * and upload raw reference images, (2) a separate "Start training" action —
++ * training is never kicked off automatically after upload.
++ *
++ * Nothing here is character-specific. This same form and these same two
++ * API routes handle the first character in the system and the fiftieth.
++ */
++
++function slugify(value: string): string {
++  return value
++    .toLowerCase()
++    .trim()
++    .replace(/[^a-z0-9]+/g, "-")
++    .replace(/(^-|-$)/g, "");
++}
++
++type Step = "form" | "created";
++
++export function NewCharacterForm() {
++  const router = useRouter();
++  const [step, setStep] = useState<Step>("form");
++
++  const [name, setName] = useState("");
++  const [slug, setSlug] = useState("");
++  const [slugTouched, setSlugTouched] = useState(false);
++  const [shortBio, setShortBio] = useState("");
++  const [files, setFiles] = useState<File[]>([]);
++  const [submitting, setSubmitting] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++
++  const [createdCharacterId, setCreatedCharacterId] = useState<string | null>(null);
++  const [createdCharacterName, setCreatedCharacterName] = useState<string>("");
++  const [uploadCount, setUploadCount] = useState(0);
++
++  const [trainingStatus, setTrainingStatus] = useState<
++    "idle" | "starting" | "started" | "error"
++  >("idle");
++  const [trainingError, setTrainingError] = useState<string | null>(null);
++
++  function handleNameChange(value: string) {
++    setName(value);
++    if (!slugTouched) setSlug(slugify(value));
++  }
++
++  function handleFilesSelected(selected: FileList | null) {
++    if (!selected) return;
++    setFiles((prev) => [...prev, ...Array.from(selected)]);
++  }
++
++  function removeFile(index: number) {
++    setFiles((prev) => prev.filter((_, i) => i !== index));
++  }
++
++  async function handleSubmit(e: React.FormEvent) {
++    e.preventDefault();
++    setError(null);
++
++    if (!name.trim() || !slug.trim()) {
++      setError("Name and slug are required.");
++      return;
++    }
++
++    setSubmitting(true);
++    try {
++      const formData = new FormData();
++      formData.set("name", name.trim());
++      formData.set("slug", slug.trim());
++      formData.set("shortBio", shortBio.trim());
++      for (const file of files) formData.append("files", file);
++
++      const res = await fetch("/api/characters", { method: "POST", body: formData });
++      const body = await res.json();
++
++      if (!res.ok) {
++        throw new Error(body.error ?? "Failed to create character.");
++      }
++
++      setCreatedCharacterId(body.character.id);
++      setCreatedCharacterName(body.character.name);
++      setUploadCount(body.uploadCount ?? 0);
++      setStep("created");
++    } catch (err) {
++      setError(err instanceof Error ? err.message : "Something went wrong.");
++    } finally {
++      setSubmitting(false);
++    }
++  }
++
++  async function handleStartTraining() {
++    if (!createdCharacterId) return;
++    setTrainingStatus("starting");
++    setTrainingError(null);
++    try {
++      const res = await fetch("/api/lora/train", {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: JSON.stringify({ characterId: createdCharacterId }),
++      });
++      const body = await res.json();
++
++      if (!res.ok) {
++        throw new Error(body.error ?? "Failed to start training.");
++      }
++      setTrainingStatus("started");
++    } catch (err) {
++      setTrainingStatus("error");
++      setTrainingError(err instanceof Error ? err.message : "Something went wrong.");
++    }
++  }
++
++  if (step === "created" && createdCharacterId) {
++    return (
++      <DashboardCard
++        accent="signal"
++        title={createdCharacterName}
++        description={`${uploadCount} reference image${uploadCount === 1 ? "" : "s"} uploaded`}
++      >
++        <div className="space-y-4">
++          <p className="text-sm text-mist">
++            The character record and reference uploads are saved. LoRA training is a
++            separate, explicit step — nothing has been submitted to fal.ai yet.
++          </p>
++
++          {trainingStatus === "started" ? (
++            <div className="flex items-center gap-2">
++              <StatusBadge status="queued" />
++              <span className="text-sm text-mist">
++                Training queued. Progress is picked up by the training-poll cron.
++              </span>
++            </div>
++          ) : (
++            <Button onClick={handleStartTraining} disabled={trainingStatus === "starting"}>
++              <Sparkles className="h-4 w-4" strokeWidth={1.75} />
++              {trainingStatus === "starting" ? "Starting training…" : "Start training"}
++            </Button>
++          )}
++
++          {trainingStatus === "error" && trainingError && (
++            <ErrorState
++              title="Couldn't start training"
++              description={trainingError}
++              onRetry={handleStartTraining}
++            />
++          )}
++
++          <div className="flex gap-2 border-t border-border pt-4">
++            <Button
++              variant="secondary"
++              size="sm"
++              onClick={() => router.push(`/characters/${createdCharacterId}`)}
++            >
++              View character
++            </Button>
++            <Button variant="ghost" size="sm" onClick={() => router.push("/characters")}>
++              Back to Characters
++            </Button>
++          </div>
++        </div>
++      </DashboardCard>
++    );
++  }
++
++  return (
++    <form onSubmit={handleSubmit}>
++      <DashboardCard title="Character details" description="Every field here works the same for every character">
++        <div className="space-y-4">
++          <div className="space-y-1.5">
++            <Label htmlFor="name">Name</Label>
++            <Input
++              id="name"
++              value={name}
++              onChange={(e) => handleNameChange(e.target.value)}
++              placeholder="e.g. Zaranyx"
++              required
++            />
++          </div>
++
++          <div className="space-y-1.5">
++            <Label htmlFor="slug">Slug</Label>
++            <Input
++              id="slug"
++              value={slug}
++              onChange={(e) => {
++                setSlugTouched(true);
++                setSlug(slugify(e.target.value));
++              }}
++              placeholder="e.g. zaranyx"
++              required
++            />
++          </div>
++
++          <div className="space-y-1.5">
++            <Label htmlFor="shortBio">Short bio</Label>
++            <Textarea
++              id="shortBio"
++              value={shortBio}
++              onChange={(e) => setShortBio(e.target.value)}
++              placeholder="One or two sentences — shown on the character card"
++              rows={3}
++            />
++          </div>
++        </div>
++      </DashboardCard>
++
++      <DashboardCard
++        className="mt-4"
++        title="Reference images"
++        description="Raw uploads for LoRA training — add as many as you have"
++      >
++        <div className="space-y-4">
++          <label
++            htmlFor="file-input"
++            className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl2 border border-dashed border-border bg-white/[0.015] px-6 py-10 text-center transition-colors hover:border-signal/40"
++          >
++            <UploadCloud className="h-5 w-5 text-mist" strokeWidth={1.75} />
++            <span className="text-sm text-paper">Click to select images</span>
++            <span className="text-xs text-mist">PNG or JPG, multiple files supported</span>
++          </label>
++          <input
++            id="file-input"
++            type="file"
++            accept="image/png,image/jpeg"
++            multiple
++            className="hidden"
++            onChange={(e) => handleFilesSelected(e.target.files)}
++          />
++
++          {files.length === 0 ? (
++            <div className="flex items-center gap-2 text-xs text-mist">
++              <ImageOff className="h-3.5 w-3.5" />
++              No files selected yet
++            </div>
++          ) : (
++            <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3">
++              {files.map((file, i) => (
++                <li
++                  key={`${file.name}-${i}`}
++                  className="flex items-center justify-between gap-2 rounded-lg border border-border bg-surface/60 px-3 py-2 text-xs text-paper"
++                >
++                  <span className="truncate">{file.name}</span>
++                  <button
++                    type="button"
++                    onClick={() => removeFile(i)}
++                    className="shrink-0 text-mist hover:text-danger"
++                    aria-label={`Remove ${file.name}`}
++                  >
++                    <X className="h-3.5 w-3.5" />
++                  </button>
++                </li>
++              ))}
++            </ul>
++          )}
++        </div>
++      </DashboardCard>
++
++      {error && (
++        <div className="mt-4">
++          <ErrorState title="Couldn't create character" description={error} />
++        </div>
++      )}
++
++      <div className="mt-4 flex gap-2">
++        <Button type="submit" disabled={submitting}>
++          {submitting ? "Creating…" : "Create character"}
++        </Button>
++        <Button type="button" variant="ghost" onClick={() => router.push("/characters")}>
++          Cancel
++        </Button>
++      </div>
++    </form>
++  );
++}
+diff --git a/apps/admin/components/ui/input.tsx b/apps/admin/components/ui/input.tsx
+new file mode 100644
+index 0000000..16086f9
+--- /dev/null
++++ b/apps/admin/components/ui/input.tsx
+@@ -0,0 +1,25 @@
++import * as React from "react";
++import { cn } from "@/lib/utils";
++
++export type InputProps = React.InputHTMLAttributes<HTMLInputElement>;
++
++const Input = React.forwardRef<HTMLInputElement, InputProps>(
++  ({ className, type, ...props }, ref) => {
++    return (
++      <input
++        type={type}
++        ref={ref}
++        className={cn(
++          "flex h-9 w-full rounded-lg border border-border bg-surface/60 px-3 text-sm text-paper placeholder:text-mist/60",
++          "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal/70 focus-visible:ring-offset-2 focus-visible:ring-offset-void",
++          "disabled:pointer-events-none disabled:opacity-40",
++          className
++        )}
++        {...props}
++      />
++    );
++  }
++);
++Input.displayName = "Input";
++
++export { Input };
+diff --git a/apps/admin/components/ui/label.tsx b/apps/admin/components/ui/label.tsx
+new file mode 100644
+index 0000000..6264dae
+--- /dev/null
++++ b/apps/admin/components/ui/label.tsx
+@@ -0,0 +1,17 @@
++import * as React from "react";
++import { cn } from "@/lib/utils";
++
++export type LabelProps = React.LabelHTMLAttributes<HTMLLabelElement>;
++
++const Label = React.forwardRef<HTMLLabelElement, LabelProps>(({ className, ...props }, ref) => {
++  return (
++    <label
++      ref={ref}
++      className={cn("text-sm font-medium text-paper", className)}
++      {...props}
++    />
++  );
++});
++Label.displayName = "Label";
++
++export { Label };
+diff --git a/apps/admin/components/ui/textarea.tsx b/apps/admin/components/ui/textarea.tsx
+new file mode 100644
+index 0000000..1a4cb83
+--- /dev/null
++++ b/apps/admin/components/ui/textarea.tsx
+@@ -0,0 +1,24 @@
++import * as React from "react";
++import { cn } from "@/lib/utils";
++
++export type TextareaProps = React.TextareaHTMLAttributes<HTMLTextAreaElement>;
++
++const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
++  ({ className, ...props }, ref) => {
++    return (
++      <textarea
++        ref={ref}
++        className={cn(
++          "flex min-h-20 w-full rounded-lg border border-border bg-surface/60 px-3 py-2 text-sm text-paper placeholder:text-mist/60",
++          "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal/70 focus-visible:ring-offset-2 focus-visible:ring-offset-void",
++          "disabled:pointer-events-none disabled:opacity-40",
++          className
++        )}
++        {...props}
++      />
++    );
++  }
++);
++Textarea.displayName = "Textarea";
++
++export { Textarea };
+diff --git a/apps/admin/lib/data/lora-pipeline.ts b/apps/admin/lib/data/lora-pipeline.ts
+new file mode 100644
+index 0000000..8ebc721
+--- /dev/null
++++ b/apps/admin/lib/data/lora-pipeline.ts
+@@ -0,0 +1,313 @@
++import type { Character } from "@/types/character";
++import type { CharacterUpload } from "@/types/character-upload";
++import type { LoraModel } from "@/types/lora-model";
++import type { GenerationJob } from "@/types/generation-job";
++
++import { getSupabaseServerClient } from "@/lib/supabase/server";
++import {
++  mapCharacterRow,
++  mapCharacterUploadRow,
++  mapLoraModelRow,
++  mapGenerationJobRow,
++} from "@/lib/supabase/mappers";
++
++/**
++ * LoRA pipeline data-access layer — Phase 2C.
++ *
++ * Covers character_uploads, lora_models, and generation_jobs (migration
++ * `add_lora_pipeline_tables`). This is the first write path in the app —
++ * everything in lib/data/characters.ts and lib/data/studio.ts up to now
++ * has been read-only. Same rule as everywhere else: character_id is a
++ * plain parameter, no character gets special-cased handling.
++ */
++
++// ---------------------------------------------------------------------------
++// characters (write side) — createCharacter lives here rather than in
++// lib/data/characters.ts to keep that file read-only/Phase-2B-only; this
++// file owns every write introduced in Phase 2C.
++// ---------------------------------------------------------------------------
++
++export interface CreateCharacterInput {
++  name: string;
++  slug: string;
++  shortBio?: string;
++}
++
++export async function createCharacter(input: CreateCharacterInput): Promise<Character> {
++  const supabase = getSupabaseServerClient();
++  const { data, error } = await supabase
++    .from("characters")
++    .insert({
++      name: input.name,
++      slug: input.slug,
++      short_bio: input.shortBio ?? null,
++    })
++    .select("*")
++    .single();
++
++  if (error) {
++    throw new Error(`Failed to create character: ${error.message}`);
++  }
++  return mapCharacterRow(data);
++}
++
++// ---------------------------------------------------------------------------
++// character_uploads
++// ---------------------------------------------------------------------------
++
++export interface CreateCharacterUploadInput {
++  characterId: string;
++  storagePath: string;
++  fileName: string;
++  mimeType: string;
++  fileSizeBytes?: number;
++}
++
++export async function createCharacterUpload(
++  input: CreateCharacterUploadInput
++): Promise<CharacterUpload> {
++  const supabase = getSupabaseServerClient();
++  const { data, error } = await supabase
++    .from("character_uploads")
++    .insert({
++      character_id: input.characterId,
++      storage_path: input.storagePath,
++      file_name: input.fileName,
++      mime_type: input.mimeType,
++      file_size_bytes: input.fileSizeBytes ?? null,
++    })
++    .select("*")
++    .single();
++
++  if (error) {
++    throw new Error(`Failed to record character upload: ${error.message}`);
++  }
++  return mapCharacterUploadRow(data);
++}
++
++export async function getUploadsForCharacter(characterId: string): Promise<CharacterUpload[]> {
++  const supabase = getSupabaseServerClient();
++  const { data, error } = await supabase
++    .from("character_uploads")
++    .select("*")
++    .eq("character_id", characterId)
++    .order("created_at", { ascending: true });
++
++  if (error) {
++    throw new Error(`Failed to load uploads for character: ${error.message}`);
++  }
++  return (data ?? []).map(mapCharacterUploadRow);
++}
++
++// ---------------------------------------------------------------------------
++// lora_models
++// ---------------------------------------------------------------------------
++
++export async function createLoraModel(characterId: string): Promise<LoraModel> {
++  const supabase = getSupabaseServerClient();
++  const { data, error } = await supabase
++    .from("lora_models")
++    .insert({ character_id: characterId })
++    .select("*")
++    .single();
++
++  if (error) {
++    throw new Error(`Failed to create LoRA model record: ${error.message}`);
++  }
++  return mapLoraModelRow(data);
++}
++
++export interface UpdateLoraModelInput {
++  status?: LoraModel["status"];
++  falRequestId?: string | null;
++  triggerWord?: string | null;
++  weightsUrl?: string | null;
++  trainingStartedAt?: string | null;
++  trainingCompletedAt?: string | null;
++  error?: string | null;
++}
++
++export async function updateLoraModel(
++  id: string,
++  input: UpdateLoraModelInput
++): Promise<LoraModel> {
++  const supabase = getSupabaseServerClient();
++  const { data, error } = await supabase
++    .from("lora_models")
++    .update({
++      ...(input.status !== undefined && { status: input.status }),
++      ...(input.falRequestId !== undefined && { fal_request_id: input.falRequestId }),
++      ...(input.triggerWord !== undefined && { trigger_word: input.triggerWord }),
++      ...(input.weightsUrl !== undefined && { weights_url: input.weightsUrl }),
++      ...(input.trainingStartedAt !== undefined && {
++        training_started_at: input.trainingStartedAt,
++      }),
++      ...(input.trainingCompletedAt !== undefined && {
++        training_completed_at: input.trainingCompletedAt,
++      }),
++      ...(input.error !== undefined && { error: input.error }),
++      updated_at: new Date().toISOString(),
++    })
++    .eq("id", id)
++    .select("*")
++    .single();
++
++  if (error) {
++    throw new Error(`Failed to update LoRA model: ${error.message}`);
++  }
++  return mapLoraModelRow(data);
++}
++
++export async function getLatestLoraModelForCharacter(
++  characterId: string
++): Promise<LoraModel | null> {
++  const supabase = getSupabaseServerClient();
++  const { data, error } = await supabase
++    .from("lora_models")
++    .select("*")
++    .eq("character_id", characterId)
++    .order("created_at", { ascending: false })
++    .limit(1)
++    .maybeSingle();
++
++  if (error) {
++    throw new Error(`Failed to load LoRA model for character: ${error.message}`);
++  }
++  return data ? mapLoraModelRow(data) : null;
++}
++
++/** Queried by the training-poll cron for every run still in flight. */
++export async function getInFlightLoraModels(): Promise<LoraModel[]> {
++  const supabase = getSupabaseServerClient();
++  const { data, error } = await supabase
++    .from("lora_models")
++    .select("*")
++    .in("status", ["queued", "training"])
++    .not("fal_request_id", "is", null);
++
++  if (error) {
++    throw new Error(`Failed to load in-flight LoRA models: ${error.message}`);
++  }
++  return (data ?? []).map(mapLoraModelRow);
++}
++
++// ---------------------------------------------------------------------------
++// generation_jobs
++// ---------------------------------------------------------------------------
++
++export interface CreateGenerationJobInput {
++  characterId: string;
++  loraModelId: string;
++  promptKey: string;
++  promptText: string;
++}
++
++export async function createGenerationJob(
++  input: CreateGenerationJobInput
++): Promise<GenerationJob> {
++  const supabase = getSupabaseServerClient();
++  const { data, error } = await supabase
++    .from("generation_jobs")
++    .insert({
++      character_id: input.characterId,
++      lora_model_id: input.loraModelId,
++      prompt_key: input.promptKey,
++      prompt_text: input.promptText,
++    })
++    .select("*")
++    .single();
++
++  if (error) {
++    throw new Error(`Failed to create generation job: ${error.message}`);
++  }
++  return mapGenerationJobRow(data);
++}
++
++export interface UpdateGenerationJobInput {
++  status?: GenerationJob["status"];
++  falRequestId?: string | null;
++  resultMediaAssetId?: string | null;
++  error?: string | null;
++}
++
++export async function updateGenerationJob(
++  id: string,
++  input: UpdateGenerationJobInput
++): Promise<GenerationJob> {
++  const supabase = getSupabaseServerClient();
++  const { data, error } = await supabase
++    .from("generation_jobs")
++    .update({
++      ...(input.status !== undefined && { status: input.status }),
++      ...(input.falRequestId !== undefined && { fal_request_id: input.falRequestId }),
++      ...(input.resultMediaAssetId !== undefined && {
++        result_media_asset_id: input.resultMediaAssetId,
++      }),
++      ...(input.error !== undefined && { error: input.error }),
++      updated_at: new Date().toISOString(),
++    })
++    .eq("id", id)
++    .select("*")
++    .single();
++
++  if (error) {
++    throw new Error(`Failed to update generation job: ${error.message}`);
++  }
++  return mapGenerationJobRow(data);
++}
++
++/** Queried by the generation-poll cron for every job still in flight. */
++export async function getInFlightGenerationJobs(): Promise<GenerationJob[]> {
++  const supabase = getSupabaseServerClient();
++  const { data, error } = await supabase
++    .from("generation_jobs")
++    .select("*")
++    .in("status", ["queued", "processing"])
++    .not("fal_request_id", "is", null);
++
++  if (error) {
++    throw new Error(`Failed to load in-flight generation jobs: ${error.message}`);
++  }
++  return (data ?? []).map(mapGenerationJobRow);
++}
++
++// ---------------------------------------------------------------------------
++// media_assets (write side) — the landing spot for a succeeded generation
++// job's output image. Reuses the existing generic media store rather than
++// a dedicated reference_images table (see Phase 2C schema review).
++// ---------------------------------------------------------------------------
++
++export interface CreateGeneratedMediaAssetInput {
++  characterId: string;
++  storagePath: string;
++  canonicalUrl: string;
++  width?: number;
++  height?: number;
++  label: string;
++}
++
++export async function createGeneratedMediaAsset(
++  input: CreateGeneratedMediaAssetInput
++): Promise<string> {
++  const supabase = getSupabaseServerClient();
++  const { data, error } = await supabase
++    .from("media_assets")
++    .insert({
++      type: "image",
++      origin: "fal",
++      character_id: input.characterId,
++      storage_path: input.storagePath,
++      canonical_url: input.canonicalUrl,
++      width: input.width ?? null,
++      height: input.height ?? null,
++      status: "raw",
++      meta: { label: input.label },
++    })
++    .select("id")
++    .single();
++
++  if (error) {
++    throw new Error(`Failed to record generated media asset: ${error.message}`);
++  }
++  return data.id as string;
++}
+diff --git a/apps/admin/lib/data/prompt-templates.ts b/apps/admin/lib/data/prompt-templates.ts
+new file mode 100644
+index 0000000..1933f9b
+--- /dev/null
++++ b/apps/admin/lib/data/prompt-templates.ts
+@@ -0,0 +1,243 @@
++/**
++ * Prompt template catalog — LoRA reference-image generation.
++ *
++ * Static, not a DB table (see migration `add_lora_pipeline_tables` review —
++ * only character_uploads / lora_models / generation_jobs are tables; these
++ * 28 templates are code because they're shared config, not per-character
++ * data). Grouped by the taxonomy of the existing reference folder structure.
++ * Each `key` is stable and referenced by `generation_jobs.prompt_key` — do
++ * not rename a key without a data migration.
++ *
++ * `{trigger}` is replaced with the character's LoRA trigger word
++ * (`lora_models.trigger_word`) at submit time.
++ */
++
++export type PromptTemplateCategory =
++  | "base_turnaround"
++  | "facial_expression"
++  | "full_body_pose"
++  | "detail_shot"
++  | "portrait";
++
++export interface PromptTemplate {
++  key: string;
++  category: PromptTemplateCategory;
++  label: string;
++  prompt: string;
++}
++
++export const PROMPT_TEMPLATE_CATEGORY_LABEL: Record<PromptTemplateCategory, string> = {
++  base_turnaround: "Base — grey background turnaround",
++  facial_expression: "Close-up facial expressions",
++  full_body_pose: "Full-body poses",
++  detail_shot: "Detail shots",
++  portrait: "Portrait variations",
++};
++
++export const PROMPT_TEMPLATES: PromptTemplate[] = [
++  // -- base_turnaround (8) --------------------------------------------------
++  {
++    key: "base_front",
++    category: "base_turnaround",
++    label: "Front view",
++    prompt:
++      "{trigger}, full body turnaround, facing camera directly, neutral standing pose, flat grey studio background, even studio lighting, high detail",
++  },
++  {
++    key: "base_three_quarter_left",
++    category: "base_turnaround",
++    label: "3/4 left",
++    prompt:
++      "{trigger}, full body turnaround, body angled three-quarters to the left, neutral standing pose, flat grey studio background, even studio lighting, high detail",
++  },
++  {
++    key: "base_profile_left",
++    category: "base_turnaround",
++    label: "Left profile",
++    prompt:
++      "{trigger}, full body turnaround, left side profile view, neutral standing pose, flat grey studio background, even studio lighting, high detail",
++  },
++  {
++    key: "base_back",
++    category: "base_turnaround",
++    label: "Back view",
++    prompt:
++      "{trigger}, full body turnaround, back facing camera, neutral standing pose, flat grey studio background, even studio lighting, high detail",
++  },
++  {
++    key: "base_three_quarter_right",
++    category: "base_turnaround",
++    label: "3/4 right",
++    prompt:
++      "{trigger}, full body turnaround, body angled three-quarters to the right, neutral standing pose, flat grey studio background, even studio lighting, high detail",
++  },
++  {
++    key: "base_profile_right",
++    category: "base_turnaround",
++    label: "Right profile",
++    prompt:
++      "{trigger}, full body turnaround, right side profile view, neutral standing pose, flat grey studio background, even studio lighting, high detail",
++  },
++  {
++    key: "base_looking_up",
++    category: "base_turnaround",
++    label: "Looking up",
++    prompt:
++      "{trigger}, full body turnaround, facing camera, chin raised looking slightly upward, flat grey studio background, even studio lighting, high detail",
++  },
++  {
++    key: "base_looking_down",
++    category: "base_turnaround",
++    label: "Looking down",
++    prompt:
++      "{trigger}, full body turnaround, facing camera, chin lowered looking slightly downward, flat grey studio background, even studio lighting, high detail",
++  },
++
++  // -- facial_expression (6) -------------------------------------------------
++  {
++    key: "expression_neutral",
++    category: "facial_expression",
++    label: "Neutral",
++    prompt:
++      "{trigger}, extreme close-up on face, neutral calm expression, sharp focus on eyes, flat grey studio background, even studio lighting",
++  },
++  {
++    key: "expression_smiling",
++    category: "facial_expression",
++    label: "Smiling",
++    prompt:
++      "{trigger}, extreme close-up on face, warm genuine smile, sharp focus on eyes, flat grey studio background, even studio lighting",
++  },
++  {
++    key: "expression_laughing",
++    category: "facial_expression",
++    label: "Laughing",
++    prompt:
++      "{trigger}, extreme close-up on face, mid-laugh candid expression, sharp focus on eyes, flat grey studio background, even studio lighting",
++  },
++  {
++    key: "expression_serious",
++    category: "facial_expression",
++    label: "Serious",
++    prompt:
++      "{trigger}, extreme close-up on face, serious focused expression, sharp focus on eyes, flat grey studio background, even studio lighting",
++  },
++  {
++    key: "expression_surprised",
++    category: "facial_expression",
++    label: "Surprised",
++    prompt:
++      "{trigger}, extreme close-up on face, surprised wide-eyed expression, sharp focus on eyes, flat grey studio background, even studio lighting",
++  },
++  {
++    key: "expression_thoughtful",
++    category: "facial_expression",
++    label: "Thoughtful",
++    prompt:
++      "{trigger}, extreme close-up on face, thoughtful contemplative expression, sharp focus on eyes, flat grey studio background, even studio lighting",
++  },
++
++  // -- full_body_pose (6) ------------------------------------------------------
++  {
++    key: "pose_standing_relaxed",
++    category: "full_body_pose",
++    label: "Standing relaxed",
++    prompt:
++      "{trigger}, full body shot, relaxed standing pose, weight on one leg, arms at sides, flat grey studio background, even studio lighting",
++  },
++  {
++    key: "pose_walking",
++    category: "full_body_pose",
++    label: "Walking",
++    prompt:
++      "{trigger}, full body shot, mid-stride walking pose, natural motion, flat grey studio background, even studio lighting",
++  },
++  {
++    key: "pose_sitting",
++    category: "full_body_pose",
++    label: "Sitting",
++    prompt:
++      "{trigger}, full body shot, seated pose on a simple stool, relaxed posture, flat grey studio background, even studio lighting",
++  },
++  {
++    key: "pose_arms_crossed",
++    category: "full_body_pose",
++    label: "Arms crossed",
++    prompt:
++      "{trigger}, full body shot, standing pose with arms crossed, confident posture, flat grey studio background, even studio lighting",
++  },
++  {
++    key: "pose_hands_on_hips",
++    category: "full_body_pose",
++    label: "Hands on hips",
++    prompt:
++      "{trigger}, full body shot, standing pose with hands on hips, confident posture, flat grey studio background, even studio lighting",
++  },
++  {
++    key: "pose_dynamic_action",
++    category: "full_body_pose",
++    label: "Dynamic action",
++    prompt:
++      "{trigger}, full body shot, dynamic mid-action pose, sense of movement and energy, flat grey studio background, even studio lighting",
++  },
++
++  // -- detail_shot (4) ----------------------------------------------------------
++  {
++    key: "detail_hands",
++    category: "detail_shot",
++    label: "Hands close-up",
++    prompt:
++      "{trigger}, close-up detail shot of hands, natural relaxed position, sharp focus, flat grey studio background, even studio lighting",
++  },
++  {
++    key: "detail_eyes",
++    category: "detail_shot",
++    label: "Eyes close-up",
++    prompt:
++      "{trigger}, extreme macro close-up of eyes, sharp focus on iris and lashes, flat grey studio background, even studio lighting",
++  },
++  {
++    key: "detail_hair",
++    category: "detail_shot",
++    label: "Hair detail",
++    prompt:
++      "{trigger}, close-up detail shot of hair texture and style, sharp focus, flat grey studio background, even studio lighting",
++  },
++  {
++    key: "detail_outfit",
++    category: "detail_shot",
++    label: "Outfit detail",
++    prompt:
++      "{trigger}, close-up detail shot of outfit and fabric texture, sharp focus, flat grey studio background, even studio lighting",
++  },
++
++  // -- portrait (4) ---------------------------------------------------------------
++  {
++    key: "portrait_studio",
++    category: "portrait",
++    label: "Studio portrait",
++    prompt:
++      "{trigger}, professional studio portrait, shoulders-up framing, three-point studio lighting, flat grey background",
++  },
++  {
++    key: "portrait_outdoor_natural",
++    category: "portrait",
++    label: "Outdoor natural light",
++    prompt:
++      "{trigger}, portrait, shoulders-up framing, soft natural outdoor daylight, shallow depth of field, blurred outdoor background",
++  },
++  {
++    key: "portrait_dramatic",
++    category: "portrait",
++    label: "Dramatic lighting",
++    prompt:
++      "{trigger}, portrait, shoulders-up framing, dramatic low-key lighting with strong shadows, dark background",
++  },
++  {
++    key: "portrait_soft_headshot",
++    category: "portrait",
++    label: "Soft light headshot",
++    prompt:
++      "{trigger}, professional headshot, shoulders-up framing, soft diffused lighting, flat light grey background",
++  },
++];
+diff --git a/apps/admin/lib/supabase/database.types.ts b/apps/admin/lib/supabase/database.types.ts
+index 0152885..74a530f 100644
+--- a/apps/admin/lib/supabase/database.types.ts
++++ b/apps/admin/lib/supabase/database.types.ts
+@@ -8,6 +8,14 @@
+  * match the schema actually applied in migration `init`, field for field.
+  * Regenerate this file for real the first time the Supabase CLI/tool is
+  * available — do not hand-edit further once that's possible.
++ *
++ * Phase 2C fix: added `Relationships: []` to every table and
++ * `Views`/`Functions` at the schema level. Without these, this file didn't
++ * satisfy postgrest-js's `GenericSchema` contract, so `.insert()`/`.update()`
++ * silently typed their argument as `never` — invisible until Phase 2C's
++ * lib/data/lora-pipeline.ts became the first write path in the app.
++ * `.select()` calls were unaffected, which is why this went undetected
++ * through Phase 2B.
+  */
+ 
+ export type Json =
+@@ -45,6 +53,7 @@ export interface Database {
+           updated_at?: string;
+         };
+         Update: Partial<Database["public"]["Tables"]["characters"]["Insert"]>;
++        Relationships: [];
+       };
+       media_assets: {
+         Row: {
+@@ -88,6 +97,7 @@ export interface Database {
+           updated_at?: string;
+         };
+         Update: Partial<Database["public"]["Tables"]["media_assets"]["Insert"]>;
++        Relationships: [];
+       };
+       reference_sets: {
+         Row: {
+@@ -111,6 +121,7 @@ export interface Database {
+           updated_at?: string;
+         };
+         Update: Partial<Database["public"]["Tables"]["reference_sets"]["Insert"]>;
++        Relationships: [];
+       };
+       reference_set_items: {
+         Row: {
+@@ -128,6 +139,7 @@ export interface Database {
+           created_at?: string;
+         };
+         Update: Partial<Database["public"]["Tables"]["reference_set_items"]["Insert"]>;
++        Relationships: [];
+       };
+       motion_templates: {
+         Row: {
+@@ -155,6 +167,7 @@ export interface Database {
+           updated_at?: string;
+         };
+         Update: Partial<Database["public"]["Tables"]["motion_templates"]["Insert"]>;
++        Relationships: [];
+       };
+       platform_accounts: {
+         Row: {
+@@ -180,6 +193,7 @@ export interface Database {
+           updated_at?: string;
+         };
+         Update: Partial<Database["public"]["Tables"]["platform_accounts"]["Insert"]>;
++        Relationships: [];
+       };
+       workflow_definitions: {
+         Row: {
+@@ -205,6 +219,7 @@ export interface Database {
+           updated_at?: string;
+         };
+         Update: Partial<Database["public"]["Tables"]["workflow_definitions"]["Insert"]>;
++        Relationships: [];
+       };
+       workflow_runs: {
+         Row: {
+@@ -232,6 +247,7 @@ export interface Database {
+           finished_at?: string | null;
+         };
+         Update: Partial<Database["public"]["Tables"]["workflow_runs"]["Insert"]>;
++        Relationships: [];
+       };
+       scheduled_posts: {
+         Row: {
+@@ -259,6 +275,7 @@ export interface Database {
+           updated_at?: string;
+         };
+         Update: Partial<Database["public"]["Tables"]["scheduled_posts"]["Insert"]>;
++        Relationships: [];
+       };
+       scheduled_post_targets: {
+         Row: {
+@@ -282,6 +299,7 @@ export interface Database {
+           error?: string | null;
+         };
+         Update: Partial<Database["public"]["Tables"]["scheduled_post_targets"]["Insert"]>;
++        Relationships: [];
+       };
+       approval_events: {
+         Row: {
+@@ -303,6 +321,7 @@ export interface Database {
+           created_at?: string;
+         };
+         Update: Partial<Database["public"]["Tables"]["approval_events"]["Insert"]>;
++        Relationships: [];
+       };
+       captions_history: {
+         Row: {
+@@ -328,6 +347,7 @@ export interface Database {
+           created_at?: string;
+         };
+         Update: Partial<Database["public"]["Tables"]["captions_history"]["Insert"]>;
++        Relationships: [];
+       };
+       agent_action_log: {
+         Row: {
+@@ -351,7 +371,96 @@ export interface Database {
+           created_at?: string;
+         };
+         Update: Partial<Database["public"]["Tables"]["agent_action_log"]["Insert"]>;
++        Relationships: [];
++      };
++      character_uploads: {
++        Row: {
++          id: string;
++          character_id: string;
++          storage_path: string;
++          file_name: string;
++          mime_type: string;
++          file_size_bytes: number | null;
++          status: string;
++          created_at: string;
++        };
++        Insert: {
++          id?: string;
++          character_id: string;
++          storage_path: string;
++          file_name: string;
++          mime_type: string;
++          file_size_bytes?: number | null;
++          status?: string;
++          created_at?: string;
++        };
++        Update: Partial<Database["public"]["Tables"]["character_uploads"]["Insert"]>;
++        Relationships: [];
++      };
++      lora_models: {
++        Row: {
++          id: string;
++          character_id: string;
++          status: string;
++          fal_request_id: string | null;
++          base_model: string;
++          trigger_word: string | null;
++          weights_url: string | null;
++          training_started_at: string | null;
++          training_completed_at: string | null;
++          error: string | null;
++          created_at: string;
++          updated_at: string;
++        };
++        Insert: {
++          id?: string;
++          character_id: string;
++          status?: string;
++          fal_request_id?: string | null;
++          base_model?: string;
++          trigger_word?: string | null;
++          weights_url?: string | null;
++          training_started_at?: string | null;
++          training_completed_at?: string | null;
++          error?: string | null;
++          created_at?: string;
++          updated_at?: string;
++        };
++        Update: Partial<Database["public"]["Tables"]["lora_models"]["Insert"]>;
++        Relationships: [];
++      };
++      generation_jobs: {
++        Row: {
++          id: string;
++          character_id: string;
++          lora_model_id: string | null;
++          prompt_key: string;
++          prompt_text: string;
++          status: string;
++          fal_request_id: string | null;
++          result_media_asset_id: string | null;
++          error: string | null;
++          created_at: string;
++          updated_at: string;
++        };
++        Insert: {
++          id?: string;
++          character_id: string;
++          lora_model_id?: string | null;
++          prompt_key: string;
++          prompt_text: string;
++          status?: string;
++          fal_request_id?: string | null;
++          result_media_asset_id?: string | null;
++          error?: string | null;
++          created_at?: string;
++          updated_at?: string;
++        };
++        Update: Partial<Database["public"]["Tables"]["generation_jobs"]["Insert"]>;
++        Relationships: [];
+       };
+     };
++    Views: Record<string, never>;
++    Functions: Record<string, never>;
+   };
+ }
+diff --git a/apps/admin/lib/supabase/mappers.ts b/apps/admin/lib/supabase/mappers.ts
+index 6729552..a090da7 100644
+--- a/apps/admin/lib/supabase/mappers.ts
++++ b/apps/admin/lib/supabase/mappers.ts
+@@ -4,6 +4,9 @@ import type { MotionTemplate } from "@/types/motion-template";
+ import type { MediaAsset, MediaAssetStatus, MediaAssetType } from "@/types/media-asset";
+ import type { WorkflowRun, WorkflowRunStatus, WorkflowTriggerSource, WorkflowType } from "@/types/workflow";
+ import type { ScheduledPost, ScheduledPostStatus, Platform } from "@/types/scheduled-post";
++import type { CharacterUpload, CharacterUploadStatus } from "@/types/character-upload";
++import type { LoraModel, LoraModelStatus } from "@/types/lora-model";
++import type { GenerationJob, GenerationJobStatus } from "@/types/generation-job";
+ import type { Database } from "./database.types";
+ 
+ /**
+@@ -145,3 +148,60 @@ export function mapScheduledPostRow(row: ScheduledPostRowWithTarget): ScheduledP
+     scheduledAt: row.scheduled_at ?? undefined,
+   };
+ }
++
++// ---------------------------------------------------------------------------
++// character_uploads / lora_models / generation_jobs — Phase 2C LoRA pipeline.
++// Same character_id-as-plain-field convention as every other table; no row
++// here ever branches on which character it belongs to.
++// ---------------------------------------------------------------------------
++type CharacterUploadRow = Database["public"]["Tables"]["character_uploads"]["Row"];
++
++export function mapCharacterUploadRow(row: CharacterUploadRow): CharacterUpload {
++  return {
++    id: row.id,
++    characterId: row.character_id,
++    storagePath: row.storage_path,
++    fileName: row.file_name,
++    mimeType: row.mime_type,
++    fileSizeBytes: row.file_size_bytes,
++    status: row.status as CharacterUploadStatus,
++    createdAt: row.created_at,
++  };
++}
++
++type LoraModelRow = Database["public"]["Tables"]["lora_models"]["Row"];
++
++export function mapLoraModelRow(row: LoraModelRow): LoraModel {
++  return {
++    id: row.id,
++    characterId: row.character_id,
++    status: row.status as LoraModelStatus,
++    falRequestId: row.fal_request_id,
++    baseModel: row.base_model,
++    triggerWord: row.trigger_word,
++    weightsUrl: row.weights_url,
++    trainingStartedAt: row.training_started_at,
++    trainingCompletedAt: row.training_completed_at,
++    error: row.error,
++    createdAt: row.created_at,
++    updatedAt: row.updated_at,
++  };
++}
++
++type GenerationJobRow = Database["public"]["Tables"]["generation_jobs"]["Row"];
++
++export function mapGenerationJobRow(row: GenerationJobRow): GenerationJob {
++  return {
++    id: row.id,
++    characterId: row.character_id,
++    loraModelId: row.lora_model_id,
++    promptKey: row.prompt_key,
++    promptText: row.prompt_text,
++    status: row.status as GenerationJobStatus,
++    falRequestId: row.fal_request_id,
++    resultMediaAssetId: row.result_media_asset_id,
++    error: row.error,
++    createdAt: row.created_at,
++    updatedAt: row.updated_at,
++  };
++}
+diff --git a/apps/admin/lib/theme/tokens.ts b/apps/admin/lib/theme/tokens.ts
+index af119fc..1f34f2e 100644
+--- a/apps/admin/lib/theme/tokens.ts
++++ b/apps/admin/lib/theme/tokens.ts
+@@ -29,12 +29,17 @@ export const STATUS_TOKEN = {
+   running: "flow",
+   queued: "flow",
+   scheduled: "pulse",
++  training: "flow",
++  processing: "flow",
++  uploaded: "flow",
+   // needs attention
+   pending_approval: "amber",
+   raw: "amber",
+   draft: "mist",
+   paused: "mist",
+   partial: "amber",
++  used_in_training: "mist",
++  ready: "success",
+   // negative
+   rejected: "danger",
+   failed: "danger",
+diff --git a/apps/admin/package-lock.json b/apps/admin/package-lock.json
+index 03b895d..5cbeff7 100644
+--- a/apps/admin/package-lock.json
++++ b/apps/admin/package-lock.json
+@@ -8,9 +8,11 @@
+       "name": "hssnd-content-factory-admin",
+       "version": "0.1.0",
+       "dependencies": {
++        "@fal-ai/client": "^1.10.1",
+         "@supabase/supabase-js": "^2.45.0",
+         "class-variance-authority": "^0.7.0",
+         "clsx": "^2.1.1",
++        "jszip": "^3.10.1",
+         "lucide-react": "^0.460.0",
+         "next": "^15.0.0",
+         "react": "^19.0.0",
+@@ -139,6 +141,20 @@
+         "node": "^12.22.0 || ^14.17.0 || >=16.0.0"
+       }
+     },
++    "node_modules/@fal-ai/client": {
++      "version": "1.10.1",
++      "resolved": "https://registry.npmjs.org/@fal-ai/client/-/client-1.10.1.tgz",
++      "integrity": "sha512-c3AVeH31OioiI2J1BfW8Cryi1DhUYldnY3X35nv6xLMq3fU2NQOo+eYaR5mL2O8MoHHh+HzXdQuIyanIyeq+ug==",
++      "license": "MIT",
++      "dependencies": {
++        "@msgpack/msgpack": "^3.0.0-beta2",
++        "eventsource-parser": "^1.1.2",
++        "robot3": "^0.4.1"
++      },
++      "engines": {
++        "node": ">=18.0.0"
++      }
++    },
+     "node_modules/@humanwhocodes/config-array": {
+       "version": "0.13.0",
+       "resolved": "https://registry.npmjs.org/@humanwhocodes/config-array/-/config-array-0.13.0.tgz",
+@@ -682,6 +698,15 @@
+         "@jridgewell/sourcemap-codec": "^1.4.14"
+       }
+     },
++    "node_modules/@msgpack/msgpack": {
++      "version": "3.1.3",
++      "resolved": "https://registry.npmjs.org/@msgpack/msgpack/-/msgpack-3.1.3.tgz",
++      "integrity": "sha512-47XIizs9XZXvuJgoaJUIE2lFoID8ugvc0jzSHP+Ptfk8nTbnR8g788wv48N03Kx0UkAv559HWRQ3yzOgzlRNUA==",
++      "license": "ISC",
++      "engines": {
++        "node": ">= 18"
++      }
++    },
+     "node_modules/@napi-rs/wasm-runtime": {
+       "version": "1.2.3",
+       "resolved": "https://registry.npmjs.org/@napi-rs/wasm-runtime/-/wasm-runtime-1.2.3.tgz",
+@@ -2333,6 +2358,12 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/core-util-is": {
++      "version": "1.0.3",
++      "resolved": "https://registry.npmjs.org/core-util-is/-/core-util-is-1.0.3.tgz",
++      "integrity": "sha512-ZQBvi1DcpJ4GDqanjucZ2Hj3wEO5pZDS89BWbkcrvdxksJorwUDDZamX9ldFkp9aw2lmBDLgkObEA4DWNJ9FYQ==",
++      "license": "MIT"
++    },
+     "node_modules/cross-spawn": {
+       "version": "7.0.6",
+       "resolved": "https://registry.npmjs.org/cross-spawn/-/cross-spawn-7.0.6.tgz",
+@@ -3208,6 +3239,15 @@
+         "node": ">=0.10.0"
+       }
+     },
++    "node_modules/eventsource-parser": {
++      "version": "1.1.2",
++      "resolved": "https://registry.npmjs.org/eventsource-parser/-/eventsource-parser-1.1.2.tgz",
++      "integrity": "sha512-v0eOBUbiaFojBu2s2NPBfYUoRR9GjcDNvCXVaqEf5vVfpIAh9f8RCo4vXTP8c63QRKCFwoLpMpTdPwwhEKVgzA==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=14.18"
++      }
++    },
+     "node_modules/fast-deep-equal": {
+       "version": "3.1.3",
+       "resolved": "https://registry.npmjs.org/fast-deep-equal/-/fast-deep-equal-3.1.3.tgz",
+@@ -3711,6 +3751,12 @@
+         "node": ">= 4"
+       }
+     },
++    "node_modules/immediate": {
++      "version": "3.0.6",
++      "resolved": "https://registry.npmjs.org/immediate/-/immediate-3.0.6.tgz",
++      "integrity": "sha512-XXOFtyqDjNDAQxVfYxuF7g9Il/IbWmmlQg2MYKOH8ExIT1qg6xc4zyS3HaEEATgs1btfzxq15ciUiY7gjSXRGQ==",
++      "license": "MIT"
++    },
+     "node_modules/import-fresh": {
+       "version": "3.3.1",
+       "resolved": "https://registry.npmjs.org/import-fresh/-/import-fresh-3.3.1.tgz",
+@@ -3754,7 +3800,6 @@
+       "version": "2.0.4",
+       "resolved": "https://registry.npmjs.org/inherits/-/inherits-2.0.4.tgz",
+       "integrity": "sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ==",
+-      "dev": true,
+       "license": "ISC"
+     },
+     "node_modules/internal-slot": {
+@@ -4335,6 +4380,18 @@
+         "node": ">=4.0"
+       }
+     },
++    "node_modules/jszip": {
++      "version": "3.10.1",
++      "resolved": "https://registry.npmjs.org/jszip/-/jszip-3.10.1.tgz",
++      "integrity": "sha512-xXDvecyTpGLrqFrvkrUSoxxfJI5AH7U8zxxtVclpsUtMCq4JQ290LY8AW5c7Ggnr/Y/oK+bQMbqK2qmtk3pN4g==",
++      "license": "(MIT OR GPL-3.0-or-later)",
++      "dependencies": {
++        "lie": "~3.3.0",
++        "pako": "~1.0.2",
++        "readable-stream": "~2.3.6",
++        "setimmediate": "^1.0.5"
++      }
++    },
+     "node_modules/keyv": {
+       "version": "4.5.4",
+       "resolved": "https://registry.npmjs.org/keyv/-/keyv-4.5.4.tgz",
+@@ -4379,6 +4436,15 @@
+         "node": ">= 0.8.0"
+       }
+     },
++    "node_modules/lie": {
++      "version": "3.3.0",
++      "resolved": "https://registry.npmjs.org/lie/-/lie-3.3.0.tgz",
++      "integrity": "sha512-UaiMJzeWRlEujzAuw5LokY1L5ecNQYZKfmyZ9L7wDHb/p5etKaxXhohBcrw0EYby+G/NA52vRSN4N39dxHAIwQ==",
++      "license": "MIT",
++      "dependencies": {
++        "immediate": "~3.0.5"
++      }
++    },
+     "node_modules/lilconfig": {
+       "version": "3.1.3",
+       "resolved": "https://registry.npmjs.org/lilconfig/-/lilconfig-3.1.3.tgz",
+@@ -4902,6 +4968,12 @@
+         "url": "https://github.com/sponsors/sindresorhus"
+       }
+     },
++    "node_modules/pako": {
++      "version": "1.0.11",
++      "resolved": "https://registry.npmjs.org/pako/-/pako-1.0.11.tgz",
++      "integrity": "sha512-4hLB8Py4zZce5s4yd9XzopqwVv/yGNhV1Bl8NTmCq1763HeK2+EwVTv+leGeL13Dnh2wfbqowVPXCIO0z4taYw==",
++      "license": "(MIT AND Zlib)"
++    },
+     "node_modules/parent-module": {
+       "version": "1.0.1",
+       "resolved": "https://registry.npmjs.org/parent-module/-/parent-module-1.0.1.tgz",
+@@ -5186,6 +5258,12 @@
+         "node": ">= 0.8.0"
+       }
+     },
++    "node_modules/process-nextick-args": {
++      "version": "2.0.1",
++      "resolved": "https://registry.npmjs.org/process-nextick-args/-/process-nextick-args-2.0.1.tgz",
++      "integrity": "sha512-3ouUOpQhtgrbOa17J7+uxOTpITYWaGP7/AhoR3+A+/1e9skrzelGi/dXzEYyvbxubEF6Wn2ypscTKiKJFFn1ag==",
++      "license": "MIT"
++    },
+     "node_modules/prop-types": {
+       "version": "15.8.1",
+       "resolved": "https://registry.npmjs.org/prop-types/-/prop-types-15.8.1.tgz",
+@@ -5264,6 +5342,27 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/readable-stream": {
++      "version": "2.3.8",
++      "resolved": "https://registry.npmjs.org/readable-stream/-/readable-stream-2.3.8.tgz",
++      "integrity": "sha512-8p0AUk4XODgIewSi0l8Epjs+EVnWiK7NoDIEGU0HhE7+ZyY8D1IMY7odu5lRrFXGg71L15KG8QrPmum45RTtdA==",
++      "license": "MIT",
++      "dependencies": {
++        "core-util-is": "~1.0.0",
++        "inherits": "~2.0.3",
++        "isarray": "~1.0.0",
++        "process-nextick-args": "~2.0.0",
++        "safe-buffer": "~5.1.1",
++        "string_decoder": "~1.1.1",
++        "util-deprecate": "~1.0.1"
++      }
++    },
++    "node_modules/readable-stream/node_modules/isarray": {
++      "version": "1.0.0",
++      "resolved": "https://registry.npmjs.org/isarray/-/isarray-1.0.0.tgz",
++      "integrity": "sha512-VLghIWNM6ELQzo7zwmcg0NmTVyWKYjvIeM83yjp0wRDTmUnrM678fQbcKBo6n2CJEF0szoG//ytg+TKla89ALQ==",
++      "license": "MIT"
++    },
+     "node_modules/readdirp": {
+       "version": "3.6.0",
+       "resolved": "https://registry.npmjs.org/readdirp/-/readdirp-3.6.0.tgz",
+@@ -5393,6 +5492,12 @@
+         "url": "https://github.com/sponsors/isaacs"
+       }
+     },
++    "node_modules/robot3": {
++      "version": "0.4.1",
++      "resolved": "https://registry.npmjs.org/robot3/-/robot3-0.4.1.tgz",
++      "integrity": "sha512-hzjy826lrxzx8eRgv80idkf8ua1JAepRc9Efdtj03N3KNJuznQCPlyCJ7gnUmDFwZCLQjxy567mQVKmdv2BsXQ==",
++      "license": "BSD-2-Clause"
++    },
+     "node_modules/run-parallel": {
+       "version": "1.2.0",
+       "resolved": "https://registry.npmjs.org/run-parallel/-/run-parallel-1.2.0.tgz",
+@@ -5437,6 +5542,12 @@
+         "url": "https://github.com/sponsors/ljharb"
+       }
+     },
++    "node_modules/safe-buffer": {
++      "version": "5.1.2",
++      "resolved": "https://registry.npmjs.org/safe-buffer/-/safe-buffer-5.1.2.tgz",
++      "integrity": "sha512-Gd2UZBJDkXlY7GbJxfsE8/nvKkUEU1G38c1siN6QP6a9PT9MmHB8GnpscSmMJSoF8LOIrt8ud/wPtojys4G6+g==",
++      "license": "MIT"
++    },
+     "node_modules/safe-push-apply": {
+       "version": "1.0.0",
+       "resolved": "https://registry.npmjs.org/safe-push-apply/-/safe-push-apply-1.0.0.tgz",
+@@ -5546,6 +5657,12 @@
+         "node": ">= 0.4"
+       }
+     },
++    "node_modules/setimmediate": {
++      "version": "1.0.5",
++      "resolved": "https://registry.npmjs.org/setimmediate/-/setimmediate-1.0.5.tgz",
++      "integrity": "sha512-MATJdZp8sLqDl/68LfQmbP8zKPLQNV6BIZoIgrscFDQ+RsvK/BxeDQOgyxKKoh0y/8h3BqVFnCqQ/gd+reiIXA==",
++      "license": "MIT"
++    },
+     "node_modules/sharp": {
+       "version": "0.34.5",
+       "resolved": "https://registry.npmjs.org/sharp/-/sharp-0.34.5.tgz",
+@@ -5720,6 +5837,15 @@
+         "node": ">= 0.4"
+       }
+     },
++    "node_modules/string_decoder": {
++      "version": "1.1.1",
++      "resolved": "https://registry.npmjs.org/string_decoder/-/string_decoder-1.1.1.tgz",
++      "integrity": "sha512-n/ShnvDi6FHbbVfviro+WojiFzv+s8MPMHBczVePfUpDJLwoLT0ht1l4YwBCbi8pJAveEEdnkHyPyTP/mzRfwg==",
++      "license": "MIT",
++      "dependencies": {
++        "safe-buffer": "~5.1.0"
++      }
++    },
+     "node_modules/string.prototype.includes": {
+       "version": "2.0.1",
+       "resolved": "https://registry.npmjs.org/string.prototype.includes/-/string.prototype.includes-2.0.1.tgz",
+@@ -6399,7 +6525,6 @@
+       "version": "1.0.2",
+       "resolved": "https://registry.npmjs.org/util-deprecate/-/util-deprecate-1.0.2.tgz",
+       "integrity": "sha512-EPD5q1uXyFxJpCrLnCc1nHnq3gOa6DZBocAIiI2TaSCA7VCJ1UJDMagCzIkXNsUYfD1daK//LTEQ8xiIbrHtcw==",
+-      "dev": true,
+       "license": "MIT"
+     },
+     "node_modules/which": {
+diff --git a/apps/admin/package.json b/apps/admin/package.json
+index 906834d..4dde31e 100644
+--- a/apps/admin/package.json
++++ b/apps/admin/package.json
+@@ -19,6 +19,8 @@
+     "tailwind-merge": "^2.5.2",
+     "lucide-react": "^0.460.0",
+     "@supabase/supabase-js": "^2.45.0",
++    "@fal-ai/client": "^1.10.1",
++    "jszip": "^3.10.1",
+     "server-only": "^0.0.1"
+   },
+   "devDependencies": {
+diff --git a/apps/admin/types/character-upload.ts b/apps/admin/types/character-upload.ts
+new file mode 100644
+index 0000000..646b209
+--- /dev/null
++++ b/apps/admin/types/character-upload.ts
+@@ -0,0 +1,25 @@
++/**
++ * CharacterUpload domain type.
++ *
++ * Mirrors the `character_uploads` table (migration `add_lora_pipeline_tables`).
++ * A raw reference image the user uploaded for a character, before it's been
++ * consumed by a LoRA training run. `character_id` is a plain required field
++ * here like everywhere else — no character gets special-cased upload logic.
++ */
++
++export type CharacterUploadStatus =
++  | "uploaded"
++  | "processing"
++  | "used_in_training"
++  | "failed";
++
++export interface CharacterUpload {
++  id: string;
++  characterId: string;
++  storagePath: string;
++  fileName: string;
++  mimeType: string;
++  fileSizeBytes: number | null;
++  status: CharacterUploadStatus;
++  createdAt: string;
++}
+diff --git a/apps/admin/types/generation-job.ts b/apps/admin/types/generation-job.ts
+new file mode 100644
+index 0000000..9d5f74f
+--- /dev/null
++++ b/apps/admin/types/generation-job.ts
+@@ -0,0 +1,28 @@
++/**
++ * GenerationJob domain type.
++ *
++ * Mirrors the `generation_jobs` table (migration `add_lora_pipeline_tables`).
++ * One row per reference-image generation call against a trained LoRA
++ * (`fal-ai/flux-lora` inference), submitted to fal.ai's queue API and polled
++ * by the generation cron. On success, `resultMediaAssetId` points at the
++ * `media_assets` row holding the actual image — generated images are not
++ * stored in a separate table, they reuse the same generic media store as
++ * every other asset in the system.
++ */
++
++export type GenerationJobStatus = "queued" | "processing" | "succeeded" | "failed";
++
++export interface GenerationJob {
++  id: string;
++  characterId: string;
++  loraModelId: string | null;
++  /** Key into the static prompt template catalog (lib/data/prompt-templates.ts). */
++  promptKey: string;
++  promptText: string;
++  status: GenerationJobStatus;
++  falRequestId: string | null;
++  resultMediaAssetId: string | null;
++  error: string | null;
++  createdAt: string;
++  updatedAt: string;
++}
+diff --git a/apps/admin/types/lora-model.ts b/apps/admin/types/lora-model.ts
+new file mode 100644
+index 0000000..6de02ba
+--- /dev/null
++++ b/apps/admin/types/lora-model.ts
+@@ -0,0 +1,24 @@
++/**
++ * LoraModel domain type.
++ *
++ * Mirrors the `lora_models` table (migration `add_lora_pipeline_tables`).
++ * One row per LoRA training run for a character, submitted to fal.ai's
++ * `flux-lora-fast-training` queue API and polled by the training cron.
++ */
++
++export type LoraModelStatus = "queued" | "training" | "ready" | "failed";
++
++export interface LoraModel {
++  id: string;
++  characterId: string;
++  status: LoraModelStatus;
++  falRequestId: string | null;
++  baseModel: string;
++  triggerWord: string | null;
++  weightsUrl: string | null;
++  trainingStartedAt: string | null;
++  trainingCompletedAt: string | null;
++  error: string | null;
++  createdAt: string;
++  updatedAt: string;
++}

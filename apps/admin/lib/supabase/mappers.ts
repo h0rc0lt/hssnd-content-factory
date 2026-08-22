@@ -4,6 +4,9 @@ import type { MotionTemplate } from "@/types/motion-template";
 import type { MediaAsset, MediaAssetStatus, MediaAssetType } from "@/types/media-asset";
 import type { WorkflowRun, WorkflowRunStatus, WorkflowTriggerSource, WorkflowType } from "@/types/workflow";
 import type { ScheduledPost, ScheduledPostStatus, Platform } from "@/types/scheduled-post";
+import type { CharacterUpload, CharacterUploadStatus } from "@/types/character-upload";
+import type { LoraModel, LoraModelStatus } from "@/types/lora-model";
+import type { GenerationJob, GenerationJobStatus } from "@/types/generation-job";
 import type { Database } from "./database.types";
 
 /**
@@ -143,5 +146,62 @@ export function mapScheduledPostRow(row: ScheduledPostRowWithTarget): ScheduledP
     platform: (firstTargetPlatform ?? "instagram") as Platform,
     status: row.status as ScheduledPostStatus,
     scheduledAt: row.scheduled_at ?? undefined,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// character_uploads / lora_models / generation_jobs — Phase 2C LoRA pipeline.
+// Same character_id-as-plain-field convention as every other table; no row
+// here ever branches on which character it belongs to.
+// ---------------------------------------------------------------------------
+type CharacterUploadRow = Database["public"]["Tables"]["character_uploads"]["Row"];
+
+export function mapCharacterUploadRow(row: CharacterUploadRow): CharacterUpload {
+  return {
+    id: row.id,
+    characterId: row.character_id,
+    storagePath: row.storage_path,
+    fileName: row.file_name,
+    mimeType: row.mime_type,
+    fileSizeBytes: row.file_size_bytes,
+    status: row.status as CharacterUploadStatus,
+    createdAt: row.created_at,
+  };
+}
+
+type LoraModelRow = Database["public"]["Tables"]["lora_models"]["Row"];
+
+export function mapLoraModelRow(row: LoraModelRow): LoraModel {
+  return {
+    id: row.id,
+    characterId: row.character_id,
+    status: row.status as LoraModelStatus,
+    falRequestId: row.fal_request_id,
+    baseModel: row.base_model,
+    triggerWord: row.trigger_word,
+    weightsUrl: row.weights_url,
+    trainingStartedAt: row.training_started_at,
+    trainingCompletedAt: row.training_completed_at,
+    error: row.error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+type GenerationJobRow = Database["public"]["Tables"]["generation_jobs"]["Row"];
+
+export function mapGenerationJobRow(row: GenerationJobRow): GenerationJob {
+  return {
+    id: row.id,
+    characterId: row.character_id,
+    loraModelId: row.lora_model_id,
+    promptKey: row.prompt_key,
+    promptText: row.prompt_text,
+    status: row.status as GenerationJobStatus,
+    falRequestId: row.fal_request_id,
+    resultMediaAssetId: row.result_media_asset_id,
+    error: row.error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
