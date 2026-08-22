@@ -5,6 +5,7 @@ import {
   createLoraModel,
   updateLoraModel,
   getUploadsForCharacter,
+  getCharacterById,
 } from "@/lib/data/lora-pipeline";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -13,15 +14,21 @@ import { getSupabaseServerClient } from "@/lib/supabase/server";
  *
  * The explicit "Start training" action — never called automatically after
  * upload (see NewCharacterForm). Submits to fal.ai's
- * `fal-ai/flux-lora-fast-training` queue, whose `images_data_url` input
- * expects a single archive rather than individual file URLs (confirmed
- * against fal's own API docs), so this zips the character's uploaded
- * reference images server-side and hands it a base64 data URL of the zip.
+ * `fal-ai/flux-lora-fast-training` queue. Its real input type (confirmed
+ * directly from the installed @fal-ai/client SDK's generated types, not
+ * guessed) is `images_data_url` (required — a single archive, not
+ * individual file URLs) plus an optional `trigger_word`. trigger_word is
+ * technically optional in the schema, but functionally necessary here:
+ * fal's own docs state that without per-image caption files, the trigger
+ * word is used in their place — and this zip never includes captions. This
+ * zips the character's uploaded reference images server-side and uses the
+ * character's slug as the trigger word — already a unique, human-readable
+ * token thanks to the DB's unique constraint on `characters.slug`, and
+ * it's what `{trigger}` in prompt-templates.ts expects at generation time.
  *
- * This submits and records the `fal_request_id`, then stops — there is no
- * training-poll cron in this checkpoint yet, so `lora_models.status` stays
- * "training" until a follow-up phase adds polling (or a webhook receiver).
- * Flagged explicitly, not silently left half-wired.
+ * This submits and records the `fal_request_id`, then stops — completion
+ * is picked up by the training-poll cron (see /api/cron/poll-training),
+ * not by this request.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -38,6 +45,11 @@ export async function POST(request: NextRequest) {
       );
     }
     fal.config({ credentials: falKey });
+
+    const character = await getCharacterById(characterId);
+    if (!character) {
+      return NextResponse.json({ error: "Character not found." }, { status: 404 });
+    }
 
     const uploads = await getUploadsForCharacter(characterId);
     if (uploads.length === 0) {
@@ -63,17 +75,19 @@ export async function POST(request: NextRequest) {
     }
     const zipBase64 = await zip.generateAsync({ type: "base64" });
     const imagesDataUrl = `data:application/zip;base64,${zipBase64}`;
+    const triggerWord = character.slug;
 
     const loraModel = await createLoraModel(characterId);
 
     try {
       const { request_id } = await fal.queue.submit("fal-ai/flux-lora-fast-training", {
-        input: { images_data_url: imagesDataUrl },
+        input: { images_data_url: imagesDataUrl, trigger_word: triggerWord },
       });
 
       const updated = await updateLoraModel(loraModel.id, {
         status: "training",
         falRequestId: request_id,
+        triggerWord,
         trainingStartedAt: new Date().toISOString(),
       });
 

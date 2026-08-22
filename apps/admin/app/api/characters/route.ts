@@ -1,31 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
-import { randomUUID } from "crypto";
-import { createCharacter, createCharacterUpload } from "@/lib/data/lora-pipeline";
-import { getSupabaseServerClient } from "@/lib/supabase/server";
+import { createCharacter } from "@/lib/data/lora-pipeline";
 
 /**
  * POST /api/characters
  *
- * Creates a character record and uploads any attached reference images to
- * Supabase Storage (`character-media` bucket), recording one
- * `character_uploads` row per file. Does not touch `lora_models` — training
- * is a separate explicit step (see /api/lora/train), never triggered here.
+ * Creates a character record. JSON body only — { name, slug, shortBio }.
+ * Reference image uploads are a separate flow entirely (see
+ * app/api/characters/[id]/upload-url and app/api/characters/[id]/uploads):
+ * files go directly from the browser to Supabase Storage via a signed
+ * upload URL, never through this — or any — Vercel Function. Vercel
+ * Functions have a hard 4.5 MB request body limit (confirmed against
+ * Vercel's own docs, not assumed); routing multipart file uploads through
+ * here broke as soon as more than a couple of images were selected.
  */
 export async function POST(request: NextRequest) {
   try {
-    const formData = await request.formData();
-    const name = String(formData.get("name") ?? "").trim();
-    const slug = String(formData.get("slug") ?? "").trim();
-    const shortBio = String(formData.get("shortBio") ?? "").trim();
-    const files = formData.getAll("files").filter((f): f is File => f instanceof File);
+    const body = await request.json();
+    const name = String(body.name ?? "").trim();
+    const slug = String(body.slug ?? "").trim();
+    const shortBio = String(body.shortBio ?? "").trim();
 
     if (!name || !slug) {
       return NextResponse.json({ error: "Name and slug are required." }, { status: 400 });
     }
 
-    let character;
     try {
-      character = await createCharacter({ name, slug, shortBio: shortBio || undefined });
+      const character = await createCharacter({ name, slug, shortBio: shortBio || undefined });
+      return NextResponse.json({ character });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to create character.";
       const friendly = message.includes("duplicate key")
@@ -33,41 +34,6 @@ export async function POST(request: NextRequest) {
         : message;
       return NextResponse.json({ error: friendly }, { status: 400 });
     }
-
-    const supabase = getSupabaseServerClient();
-    let uploadCount = 0;
-    const failedFiles: string[] = [];
-
-    for (const file of files) {
-      const ext = file.name.includes(".") ? file.name.split(".").pop() : "bin";
-      const storagePath = `${character.id}/uploads/${randomUUID()}.${ext}`;
-      const arrayBuffer = await file.arrayBuffer();
-
-      const { error: uploadError } = await supabase.storage
-        .from("character-media")
-        .upload(storagePath, arrayBuffer, {
-          contentType: file.type || "application/octet-stream",
-        });
-
-      if (uploadError) {
-        // The character record is already saved at this point — a partial
-        // upload failure is recoverable (re-upload later), losing the
-        // character record on a storage hiccup would not be.
-        failedFiles.push(file.name);
-        continue;
-      }
-
-      await createCharacterUpload({
-        characterId: character.id,
-        storagePath,
-        fileName: file.name,
-        mimeType: file.type || "application/octet-stream",
-        fileSizeBytes: file.size,
-      });
-      uploadCount += 1;
-    }
-
-    return NextResponse.json({ character, uploadCount, failedFiles });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unexpected error.";
     return NextResponse.json({ error: message }, { status: 500 });

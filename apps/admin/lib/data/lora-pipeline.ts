@@ -27,6 +27,20 @@ import {
 // file owns every write introduced in Phase 2C.
 // ---------------------------------------------------------------------------
 
+export async function getCharacterById(id: string): Promise<Character | null> {
+  const supabase = getSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("characters")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Failed to load character: ${error.message}`);
+  }
+  return data ? mapCharacterRow(data) : null;
+}
+
 export interface CreateCharacterInput {
   name: string;
   slug: string;

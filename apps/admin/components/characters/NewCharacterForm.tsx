@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/ui/badge";
 import { ErrorState } from "@/components/states/ErrorState";
+import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
 
 /**
  * Character creation + reference upload — Phase 2C.
@@ -18,8 +19,19 @@ import { ErrorState } from "@/components/states/ErrorState";
  * and upload raw reference images, (2) a separate "Start training" action —
  * training is never kicked off automatically after upload.
  *
- * Nothing here is character-specific. This same form and these same two
- * API routes handle the first character in the system and the fiftieth.
+ * Uploads go directly from the browser to Supabase Storage (signed upload
+ * URL), never through a Vercel Function as multipart form data. Vercel
+ * Functions cap request bodies at 4.5 MB — routing file bytes through
+ * POST /api/characters broke as soon as more than a couple of reference
+ * images were selected (413 FUNCTION_PAYLOAD_TOO_LARGE, a non-JSON
+ * response that surfaced as a confusing "not valid JSON" error). Each file
+ * now takes three small round trips instead of one large one:
+ *   1. POST /api/characters/[id]/upload-url  — get a signed URL (tiny JSON)
+ *   2. PUT directly to Supabase Storage      — the actual file bytes
+ *   3. POST /api/characters/[id]/uploads     — record the DB row (tiny JSON)
+ *
+ * Nothing here is character-specific. This same form and these same API
+ * routes handle the first character in the system and the fiftieth.
  */
 
 function slugify(value: string): string {
@@ -42,6 +54,7 @@ export function NewCharacterForm() {
   const [shortBio, setShortBio] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [progressLabel, setProgressLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [createdCharacterId, setCreatedCharacterId] = useState<string | null>(null);
@@ -67,6 +80,47 @@ export function NewCharacterForm() {
     setFiles((prev) => prev.filter((_, i) => i !== index));
   }
 
+  async function uploadOneFile(characterId: string, file: File): Promise<void> {
+    // Step 1: ask the server for a signed upload URL (small JSON).
+    const signRes = await fetch(`/api/characters/${characterId}/upload-url`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileName: file.name, mimeType: file.type }),
+    });
+    const signBody = await signRes.json();
+    if (!signRes.ok) {
+      throw new Error(signBody.error ?? `Failed to prepare upload for ${file.name}.`);
+    }
+
+    // Step 2: upload the actual bytes straight to Supabase Storage —
+    // never touches a Vercel Function.
+    const supabase = getSupabaseBrowserClient();
+    const { error: uploadError } = await supabase.storage
+      .from("character-media")
+      .uploadToSignedUrl(signBody.storagePath, signBody.token, file, {
+        contentType: file.type || "application/octet-stream",
+      });
+    if (uploadError) {
+      throw new Error(`Failed to upload ${file.name}: ${uploadError.message}`);
+    }
+
+    // Step 3: record the character_uploads row (small JSON).
+    const recordRes = await fetch(`/api/characters/${characterId}/uploads`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        storagePath: signBody.storagePath,
+        fileName: file.name,
+        mimeType: file.type || "application/octet-stream",
+        fileSizeBytes: file.size,
+      }),
+    });
+    const recordBody = await recordRes.json();
+    if (!recordRes.ok) {
+      throw new Error(recordBody.error ?? `Failed to record upload for ${file.name}.`);
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -78,27 +132,44 @@ export function NewCharacterForm() {
 
     setSubmitting(true);
     try {
-      const formData = new FormData();
-      formData.set("name", name.trim());
-      formData.set("slug", slug.trim());
-      formData.set("shortBio", shortBio.trim());
-      for (const file of files) formData.append("files", file);
+      setProgressLabel("Creating character…");
+      const createRes = await fetch("/api/characters", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          slug: slug.trim(),
+          shortBio: shortBio.trim(),
+        }),
+      });
+      const createBody = await createRes.json();
+      if (!createRes.ok) {
+        throw new Error(createBody.error ?? "Failed to create character.");
+      }
+      const character = createBody.character;
 
-      const res = await fetch("/api/characters", { method: "POST", body: formData });
-      const body = await res.json();
-
-      if (!res.ok) {
-        throw new Error(body.error ?? "Failed to create character.");
+      let successCount = 0;
+      for (let i = 0; i < files.length; i++) {
+        setProgressLabel(`Uploading image ${i + 1} of ${files.length}…`);
+        try {
+          await uploadOneFile(character.id, files[i]);
+          successCount += 1;
+        } catch (fileErr) {
+          // One failed file shouldn't lose the character record or the
+          // other successful uploads — surface it and keep going.
+          console.error(fileErr);
+        }
       }
 
-      setCreatedCharacterId(body.character.id);
-      setCreatedCharacterName(body.character.name);
-      setUploadCount(body.uploadCount ?? 0);
+      setCreatedCharacterId(character.id);
+      setCreatedCharacterName(character.name);
+      setUploadCount(successCount);
       setStep("created");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
       setSubmitting(false);
+      setProgressLabel(null);
     }
   }
 
@@ -275,9 +346,9 @@ export function NewCharacterForm() {
         </div>
       )}
 
-      <div className="mt-4 flex gap-2">
+      <div className="mt-4 flex items-center gap-3">
         <Button type="submit" disabled={submitting}>
-          {submitting ? "Creating…" : "Create character"}
+          {submitting ? progressLabel ?? "Working…" : "Create character"}
         </Button>
         <Button type="button" variant="ghost" onClick={() => router.push("/characters")}>
           Cancel
