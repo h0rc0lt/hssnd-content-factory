@@ -11,6 +11,12 @@ import { getCharacters } from "@/lib/data/characters";
 import type { DashboardStats } from "@/types/dashboard";
 import type { LucideIcon } from "lucide-react";
 
+// Live Supabase reads happen inside this route (see lib/data/*) — force
+// dynamic rendering so `next build` never tries to execute them at build
+// time (no credentials available then) and so the dashboard always
+// reflects current DB state rather than a build-time snapshot.
+export const dynamic = "force-dynamic";
+
 export default function DashboardPage() {
   return (
     <div className="space-y-8">

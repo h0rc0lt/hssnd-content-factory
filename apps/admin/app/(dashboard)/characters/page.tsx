@@ -5,6 +5,9 @@ import { EmptyState } from "@/components/states/EmptyState";
 import { Button } from "@/components/ui/button";
 import { getCharacters } from "@/lib/data/characters";
 
+// See app/(dashboard)/page.tsx for why this route is forced dynamic.
+export const dynamic = "force-dynamic";
+
 export default function CharactersPage() {
   return (
     <div className="space-y-6">

@@ -4,51 +4,147 @@ import type { MediaAsset } from "@/types/media-asset";
 import type { WorkflowRun } from "@/types/workflow";
 import type { ScheduledPost } from "@/types/scheduled-post";
 
-import { MOCK_REFERENCE_SETS } from "@/lib/mock/reference-sets";
-import { MOCK_MOTION_TEMPLATES, MOCK_MOTION_USAGE } from "@/lib/mock/motion-templates";
-import { MOCK_MEDIA_ASSETS } from "@/lib/mock/media-assets";
-import { MOCK_WORKFLOW_RUNS } from "@/lib/mock/workflow-runs";
-import { MOCK_SCHEDULED_POSTS } from "@/lib/mock/scheduled-posts";
-import { delay } from "./delay";
+import { getSupabaseServerClient } from "@/lib/supabase/server";
+import {
+  mapReferenceSetRow,
+  mapMotionTemplateRow,
+  mapMediaAssetRow,
+  mapWorkflowRunRow,
+  mapScheduledPostRow,
+  type ReferenceSetRowWithCount,
+  type WorkflowRunRowWithDefinition,
+  type ScheduledPostRowWithTarget,
+} from "@/lib/supabase/mappers";
 
 /**
- * Character Studio data-access layer.
+ * Character Studio data-access layer — LIVE, Phase 2B (continued).
  *
- * MOCK IMPLEMENTATION — Phase 2A. Grouped in one file for now because each
- * query is small; expect this to split into one file per table (mirroring
- * `lib/mock/*`) once these become real Supabase queries with their own
- * filtering/pagination needs.
+ * Replaces the remaining mock implementations with real Supabase queries.
+ * Function signatures are unchanged — no component changed for this cutover.
  *
- * Every function takes `characterId` as a required, first-class parameter —
- * no function here is allowed to special-case a specific character.
+ * All five underlying tables (reference_sets, motion_templates, media_assets,
+ * workflow_runs, scheduled_posts) are genuinely empty right now — no fake
+ * seed data was added for these, deliberately. Unlike `characters` (a real
+ * business entity worth seeding for continuity), rows in these tables would
+ * represent generated media, executed workflows, and scheduled posts that
+ * never actually happened — fabricating them would misrepresent real
+ * system activity. Every panel already has an EmptyState built for exactly
+ * this case (see components/studio/panels/*), so real emptiness renders
+ * correctly rather than needing to be simulated.
  */
 
 export async function getReferenceSetsForCharacter(characterId: string): Promise<ReferenceSet[]> {
-  await delay(350);
-  return MOCK_REFERENCE_SETS.filter((r) => r.characterId === characterId);
+  const supabase = getSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("reference_sets")
+    .select("*, reference_set_items(count)")
+    .eq("character_id", characterId)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    throw new Error(`Failed to load reference sets: ${error.message}`);
+  }
+  return ((data as unknown as ReferenceSetRowWithCount[]) ?? []).map(mapReferenceSetRow);
 }
 
 export async function getMotionTemplateLibrary(): Promise<MotionTemplate[]> {
-  await delay(350);
-  return MOCK_MOTION_TEMPLATES;
+  const supabase = getSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("motion_templates")
+    .select("*")
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    throw new Error(`Failed to load motion template library: ${error.message}`);
+  }
+  return (data ?? []).map(mapMotionTemplateRow);
 }
 
+/**
+ * "Usage" isn't its own table (see types/motion-template.ts) — it's derived
+ * by aggregating media_assets rows for this character that have a
+ * motion_template_id set. Aggregated in JS rather than SQL GROUP BY since
+ * the Supabase JS client's query builder doesn't expose GROUP BY directly
+ * and the expected row counts here are small.
+ */
 export async function getMotionUsageForCharacter(characterId: string): Promise<MotionTemplateUsage[]> {
-  await delay(350);
-  return MOCK_MOTION_USAGE.filter((u) => u.characterId === characterId);
+  const supabase = getSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("media_assets")
+    .select("motion_template_id, created_at")
+    .eq("character_id", characterId)
+    .not("motion_template_id", "is", null);
+
+  if (error) {
+    throw new Error(`Failed to load motion usage: ${error.message}`);
+  }
+
+  // Hand-written database.types.ts lacks the Relationships metadata real
+  // generated types include, which the query builder needs to correctly
+  // infer partial-select shapes — explicit cast here, not a runtime risk
+  // (the actual columns selected are exactly these two).
+  const rows = (data ?? []) as { motion_template_id: string | null; created_at: string }[];
+
+  const byTemplate = new Map<string, { outputCount: number; lastUsedAt: string }>();
+  for (const row of rows) {
+    const templateId = row.motion_template_id as string;
+    const existing = byTemplate.get(templateId);
+    if (!existing) {
+      byTemplate.set(templateId, { outputCount: 1, lastUsedAt: row.created_at });
+    } else {
+      existing.outputCount += 1;
+      if (row.created_at > existing.lastUsedAt) existing.lastUsedAt = row.created_at;
+    }
+  }
+
+  return Array.from(byTemplate.entries()).map(([motionTemplateId, agg]) => ({
+    motionTemplateId,
+    characterId,
+    lastUsedAt: agg.lastUsedAt,
+    outputCount: agg.outputCount,
+  }));
 }
 
 export async function getRecentMediaForCharacter(characterId: string, limit = 6): Promise<MediaAsset[]> {
-  await delay(350);
-  return MOCK_MEDIA_ASSETS.filter((m) => m.characterId === characterId).slice(0, limit);
+  const supabase = getSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("media_assets")
+    .select("*")
+    .eq("character_id", characterId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    throw new Error(`Failed to load recent media: ${error.message}`);
+  }
+  return (data ?? []).map(mapMediaAssetRow);
 }
 
 export async function getRecentWorkflowRunsForCharacter(characterId: string, limit = 6): Promise<WorkflowRun[]> {
-  await delay(350);
-  return MOCK_WORKFLOW_RUNS.filter((r) => r.characterId === characterId).slice(0, limit);
+  const supabase = getSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("workflow_runs")
+    .select("*, workflow_definitions(type)")
+    .eq("character_id", characterId)
+    .order("started_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    throw new Error(`Failed to load recent workflow runs: ${error.message}`);
+  }
+  return ((data as unknown as WorkflowRunRowWithDefinition[]) ?? []).map(mapWorkflowRunRow);
 }
 
 export async function getScheduledPostsForCharacter(characterId: string): Promise<ScheduledPost[]> {
-  await delay(350);
-  return MOCK_SCHEDULED_POSTS.filter((p) => p.characterId === characterId);
+  const supabase = getSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("scheduled_posts")
+    .select("*, scheduled_post_targets(platform_accounts(platform))")
+    .eq("character_id", characterId)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    throw new Error(`Failed to load scheduled posts: ${error.message}`);
+  }
+  return ((data as unknown as ScheduledPostRowWithTarget[]) ?? []).map(mapScheduledPostRow);
 }
