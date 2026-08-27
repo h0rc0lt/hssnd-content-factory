@@ -30,11 +30,14 @@ is wired to real Supabase data end to end:
 - Phase 2C added the character creation flow (`NewCharacterForm`), direct
   browser-to-Supabase-Storage reference uploads (bypassing Vercel's 4.5 MB
   Function body limit), the explicit "Start training" action that submits a
-  fal.ai LoRA job, and a Vercel Cron poller (`/api/cron/poll-training`)
-  that picks up training completion. Every page and API route except
-  `/api/cron/*` sits behind HTTP Basic Auth (`apps/admin/middleware.ts`) —
-  this repo is public and its routes are guessable, and `/api/lora/train`
-  triggers a real, billed fal.ai job per call.
+  fal.ai LoRA job, and a poller (`/api/cron/poll-training`) that picks up
+  training completion — triggered every 5 minutes by
+  `.github/workflows/poll-training.yml` rather than Vercel Cron, since this
+  team's Vercel Hobby plan silently doesn't run cron schedules more
+  frequent than once a day. Every page and API route except `/api/cron/*`
+  sits behind HTTP Basic Auth (`apps/admin/middleware.ts`) — this repo is
+  public and its routes are guessable, and `/api/lora/train` triggers a
+  real, billed fal.ai job per call.
 
 There is still no n8n integration and no OpenClaw integration in this repo.
 RLS is enabled with zero policies on all tables (intentional — blocks all
