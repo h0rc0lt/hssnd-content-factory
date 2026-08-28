@@ -13,6 +13,11 @@ import { NextRequest, NextResponse } from "next/server";
  * CRON_SECRET as a bearer token (see app/api/cron/poll-training/route.ts),
  * and Vercel Cron does not send Basic Auth credentials — gating it here
  * too would just break the cron.
+ *
+ * /api/webhooks/* is excluded for the same reason — kie.ai calls these
+ * routes directly to deliver generation results and won't send Basic Auth
+ * either. They authenticate via a `?secret=` query param checked against
+ * KIE_WEBHOOK_SECRET instead (see app/api/webhooks/kie/route.ts).
  */
 export function middleware(request: NextRequest) {
   const user = process.env.BASIC_AUTH_USER;
@@ -43,5 +48,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!api/cron|_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!api/cron|api/webhooks|_next/static|_next/image|favicon.ico).*)"],
 };

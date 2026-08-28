@@ -252,11 +252,6 @@ const PROVIDER_LABEL: Record<Provider, string> = {
   "nano-banana": "Nano Banana",
 };
 
-/** nano-banana (direct Gemini API) resolves synchronously in /api/generate
- *  — a "succeeded" result there means the image is already stored, not
- *  queued for the poll cron like the other two providers. */
-const SYNCHRONOUS_PROVIDERS: Provider[] = ["nano-banana"];
-
 function GenerationForm({
   character,
   loraReady,
@@ -292,15 +287,13 @@ function GenerationForm({
       const results = (body.results ?? []) as GenerateApiResult[];
       const failedCount = results.filter((r) => r.status === "failed").length;
       const okCount = promptKeys.length - failedCount;
-      const isSync = SYNCHRONOUS_PROVIDERS.includes(provider);
+      const isKie = provider === "nano-banana-pro" || provider === "nano-banana";
       setQueuedMessage(
-        isSync
-          ? `Generated ${okCount} of ${promptKeys.length} image${promptKeys.length === 1 ? "" : "s"} ` +
-              `via ${PROVIDER_LABEL[provider]}. They're already stored — refresh Overview → Recent media ` +
-              "to see them."
-          : `Queued ${okCount} of ${promptKeys.length} image${promptKeys.length === 1 ? "" : "s"} ` +
-              `via ${PROVIDER_LABEL[provider]}. They'll appear in Overview → Recent media once the poll ` +
-              "cron picks up completion (every 5 minutes)."
+        `Queued ${okCount} of ${promptKeys.length} image${promptKeys.length === 1 ? "" : "s"} ` +
+          `via ${PROVIDER_LABEL[provider]}. They'll appear in Overview → Recent media once ` +
+          (isKie
+            ? "kie.ai's webhook delivers the result (usually well under a minute)."
+            : "the poll cron picks up completion (every 5 minutes).")
       );
       router.refresh();
     } catch (err) {
@@ -347,7 +340,7 @@ function GenerationForm({
               variant={provider === "nano-banana-pro" ? "default" : "secondary"}
               onClick={() => setProvider("nano-banana-pro")}
             >
-              Nano Banana Pro · ~$0.15/image
+              Nano Banana Pro · ~$0.12/image
             </Button>
             <Button
               type="button"
@@ -355,17 +348,15 @@ function GenerationForm({
               variant={provider === "nano-banana" ? "default" : "secondary"}
               onClick={() => setProvider("nano-banana")}
             >
-              Nano Banana · 500 free/day
+              Nano Banana · ~$0.02/image
             </Button>
           </div>
           <p className="text-xs text-mist">
             {provider === "flux-lora"
               ? "Uses the character's trained LoRA weights — cheapest for high-volume generation."
-              : provider === "nano-banana-pro"
-                ? "Uses up to 3 of the character's reference uploads directly, no training needed."
-                : "Google's Gemini API directly (not fal.ai) — same reference-upload approach as " +
-                  "Nano Banana Pro, but free for the first 500 requests/day, then billed. Resolves " +
-                  "immediately, no waiting on the poll cron."}
+              : "Uses up to 3 of the character's reference uploads directly, no training needed. " +
+                "Via kie.ai (not fal.ai directly) — cheaper, and delivers results by webhook " +
+                "instead of waiting on the poll cron."}
           </p>
         </div>
 

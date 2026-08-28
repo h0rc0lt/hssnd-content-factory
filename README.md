@@ -19,8 +19,8 @@ Phase 1.
 
 ## Status
 
-**Phase 2G — free-tier image generation.** `apps/admin` is wired to
-real Supabase data end to end:
+**Phase 2H — kie.ai for Image Batch's reference-image providers.**
+`apps/admin` is wired to real Supabase data end to end:
 
 - Phase 2A laid down the UI shell (`DashboardShell`, Character Studio, state
   components) on typed mock data.
@@ -61,19 +61,43 @@ real Supabase data end to end:
   pricing page, not assumed). `generation_jobs.fal_endpoint` now takes a
   third value; the poll-generation cron branches on it the same way it
   already did for Character Swap.
-- Phase 2G added a third Image Batch provider, **Nano Banana** (plain, not
-  Pro) — `gemini-2.5-flash-image` called directly against the **Google
-  Gemini API** (`@google/genai`, `GEMINI_API_KEY`), not through fal.ai.
-  Nano Banana Pro turned out to have zero free-tier quota anywhere
-  (confirmed against Google's own published rate limits), but the base
-  model genuinely gives 500 free requests/day. Same reference-image
-  identity approach as Nano Banana Pro, but architecturally different from
-  every other provider in this app: `generateContent()` is synchronous, so
-  this branch of `/api/generate` downloads the character's reference
-  uploads and base64-inlines them into the request, uploads the returned
-  image bytes straight to Supabase Storage, and resolves the
-  `generation_jobs` row to succeeded/failed in the same request — no fal
-  queue, no `fal_request_id`, never seen by the poll-generation cron.
+- Phase 2G attempted a third Image Batch provider, plain **Nano Banana**
+  (not Pro) via a *direct* call to the **Google Gemini API**
+  (`@google/genai`, synchronous `generateContent()`, no fal.ai, no poll
+  cron), on the strength of Google's advertised 500-free-requests/day
+  tier. Live testing disproved that: every real call came back
+  `429 RESOURCE_EXHAUSTED` with `limit: 0` for `gemini-2.5-flash-preview-image`,
+  even on a genuine no-billing "Free tier" AI Studio project (confirmed via
+  screenshot — $0.00 spent, no payment method attached). The free tier
+  apparently doesn't extend to this model over the raw API regardless of
+  billing status. This approach was fully reverted in Phase 2H below —
+  `@google/genai` is no longer a dependency.
+- Phase 2H replaced **both** fal.ai's Nano Banana Pro (`fal-ai/nano-banana-pro/edit`,
+  from Phase 2F) and the direct-Gemini Nano Banana attempt (Phase 2G) with
+  **kie.ai**, a third-party reseller of both models. Two independent
+  reasons, not just one: kie.ai is cheaper than either previous approach
+  ($0.02 vs fal.ai/Google's $0.039 for plain Nano Banana, ~$0.12 vs $0.15
+  for Pro), and — more importantly — its `createTask` API accepts a
+  `callBackUrl` and pushes the result the moment it's ready instead of
+  requiring a poll. That sidesteps the GitHub Actions poller's flaky
+  `schedule` trigger entirely for these two providers (see the known-issue
+  paragraph below): `/api/webhooks/kie` now resolves them instead of
+  `/api/cron/poll-generation`, which is why `generation_jobs` gained a
+  `provider` column (migration `add_generation_jobs_provider`) — the poll
+  cron's in-flight query filters to `provider="fal"` so it never touches a
+  kie.ai job's foreign task id. Flux LoRA training and generation stay on
+  fal.ai on purpose: Astria.ai was considered as a training replacement
+  too (also webhook-based, would have fixed the training poller's same lag
+  issue), but Astria doesn't expose a portable weights file the way fal
+  does, which would have broken Character Swap for any newly-trained
+  character — not worth it for a personal tool where the training poller
+  lag is already tolerable via manual `workflow_dispatch`. One honesty
+  note: kie.ai's own docs (`docs.kie.ai`) are blocked by this environment's
+  network egress proxy, so `lib/kie/client.ts`'s request/response shape was
+  cross-referenced from search results and third-party write-ups rather
+  than kie.ai's primary documentation or an installed SDK's types — every
+  other provider integration in this app was verified that way, this one
+  wasn't, so a live-test mismatch here is more likely than usual.
 
 This project's own testing surfaced two real bugs worth knowing about if
 something looks stuck: (1) `/api/lora/train` originally built
@@ -81,21 +105,24 @@ something looks stuck: (1) `/api/lora/train` originally built
 certain size with a `422 URL too long` — fixed by uploading the zip via
 `fal.storage.upload()` and passing the real URL it returns instead; (2) the
 GitHub Actions poller's `schedule` trigger is best-effort, not guaranteed —
-it has gone quiet for close to two hours in practice. If a training or
-generation job looks stuck, manually re-run `.github/workflows/poll-training.yml`
-(`workflow_dispatch`) rather than assuming something is broken.
+it has gone quiet for 20 minutes to close to two hours in practice, on
+multiple separate occasions. If a training or Flux LoRA generation job
+looks stuck, manually re-run `.github/workflows/poll-training.yml`
+(`workflow_dispatch`) rather than assuming something is broken — this is
+exactly why Phase 2H moved the two reference-image providers off polling
+entirely.
 
-Both pollers are triggered every 5 minutes by
+The training poller is still triggered every 5 minutes by
 `.github/workflows/poll-training.yml` rather than Vercel Cron, since this
 team's Vercel Hobby plan silently doesn't run cron schedules more frequent
-than once a day. Every page and API route except `/api/cron/*` sits behind
-HTTP Basic Auth (`apps/admin/middleware.ts`) — this repo is public and its
-routes are guessable, and `/api/lora/train`, `/api/generate`, and
-`/api/swap` all trigger real, billed jobs per call (fal.ai for every
-provider except Nano Banana, which calls Google's Gemini API directly) —
-Character Swap, Nano Banana Pro, and video (Motion Control, not yet built)
-all cost meaningfully more per call than a Flux LoRA still image; Nano
-Banana is free up to 500 requests/day, then billed like the others.
+than once a day; it also still covers Flux LoRA generation and Character
+Swap (both still on fal.ai). Every page and API route except `/api/cron/*`
+and `/api/webhooks/*` sits behind HTTP Basic Auth (`apps/admin/middleware.ts`)
+— this repo is public and its routes are guessable, `/api/webhooks/kie` is
+gated by its own `?secret=` check instead (kie.ai can't send Basic Auth),
+and `/api/lora/train`, `/api/generate`, and `/api/swap` all trigger real,
+billed jobs per call — Character Swap and video (Motion Control, not yet
+built) cost meaningfully more per call than a Flux LoRA still image.
 
 There is still no n8n integration and no OpenClaw integration in this repo.
 Motion Control and the Scheduler remain read-only/unwired, and Reference

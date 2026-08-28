@@ -12,6 +12,11 @@
 
 export type GenerationJobStatus = "queued" | "processing" | "succeeded" | "failed";
 
+/** 'fal' jobs are polled by /api/cron/poll-generation; 'kie.ai' jobs are
+ *  resolved by kie.ai POSTing to /api/webhooks/kie instead — see migration
+ *  add_generation_jobs_provider and /api/generate's doc comment. */
+export type GenerationJobProvider = "fal" | "kie.ai";
+
 export interface GenerationJob {
   id: string;
   characterId: string;
@@ -22,11 +27,14 @@ export interface GenerationJob {
   promptKey: string;
   promptText: string;
   status: GenerationJobStatus;
+  provider: GenerationJobProvider;
+  /** fal.ai's request_id for a 'fal' job, or kie.ai's taskId for a 'kie.ai'
+   *  job — either way, the id the completion callback (poll or webhook)
+   *  uses to find this row again. */
   falRequestId: string | null;
-  /** Which fal.ai queue endpoint this job was submitted to — the
-   *  poll-generation cron needs this to call fal.queue.status/result on the
-   *  right endpoint per job (Image Batch and Character Swap use different
-   *  ones; see migration add_generation_jobs_fal_endpoint). */
+  /** Which endpoint/model this job was submitted to, scoped by `provider`
+   *  (e.g. "fal-ai/flux-lora" or "google/nano-banana-edit") — see migration
+   *  add_generation_jobs_fal_endpoint. */
   falEndpoint: string;
   resultMediaAssetId: string | null;
   error: string | null;
