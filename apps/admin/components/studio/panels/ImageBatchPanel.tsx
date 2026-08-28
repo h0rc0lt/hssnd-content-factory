@@ -19,24 +19,6 @@ import type { CharacterUpload } from "@/types/character-upload";
 import type { LoraModel } from "@/types/lora-model";
 import type { GenerationJob } from "@/types/generation-job";
 
-/**
- * Image batch generator — Phase 2D.
- *
- * Two different jobs share this one tab, deliberately: (1) getting a
- * character to a ready trained LoRA (upload references, start training) if
- * it doesn't have one yet, and (2) generating reference images from that
- * LoRA once it does. There's no other page in the Studio where uploads or
- * (re)training can happen for an EXISTING character — only character
- * creation has that flow (NewCharacterForm) — so this panel closes that gap
- * rather than adding a whole separate tab for it.
- *
- * Generation calls fal.ai directly from POST /api/generate (see that
- * route's doc comment for why, not n8n) and — like LoRA training — never
- * polls live from the client. Submitting queues one generation_jobs row per
- * selected prompt template; the poll cron (every 5 min, same GitHub Actions
- * workflow as training) picks up completion and results land in the
- * Overview tab's Recent media once ready.
- */
 export function ImageBatchPanel({
   character,
   uploads,
@@ -50,15 +32,6 @@ export function ImageBatchPanel({
 }) {
   const loraReady = loraModel?.status === "ready";
 
-  // Nano Banana Pro needs nothing but reference images — no training wait —
-  // so it's the only thing gated on zero uploads. Once there's at least
-  // one, generation is possible even before (or without ever) training a
-  // LoRA; the LoRA card stays visible alongside it until training is done,
-  // since Flux LoRA is still the cheaper option once it's ready.
-  // FLUX Schnell Free works from zero uploads too (text-to-image only),
-  // but we still require at least one upload before showing the generation
-  // form — keeps the UX flow consistent and prompts the user to add some
-  // reference material before generating.
   if (uploads.length === 0) {
     return <TrainingSetup character={character} uploads={uploads} loraModel={loraModel} />;
   }
@@ -73,9 +46,6 @@ export function ImageBatchPanel({
   );
 }
 
-/** Exported so CharacterSwapPanel can reuse it — there's still only one
- *  place uploads/training happen for an existing character, and Character
- *  Swap needs a ready LoRA exactly the same way Image Batch does. */
 export function TrainingSetup({
   character,
   uploads,
@@ -113,8 +83,6 @@ export function TrainingSetup({
         await uploadCharacterReferenceFile(character.id, files[i]);
         successCount += 1;
       } catch (err) {
-        // One failed file shouldn't block the rest — same policy as
-        // NewCharacterForm's initial upload flow.
         console.error(err);
         setError(err instanceof Error ? err.message : `Failed to upload ${files[i].name}.`);
       }
@@ -152,8 +120,8 @@ export function TrainingSetup({
       title={isTraining ? "Training in progress" : "Train a Flux LoRA"}
       description={
         isTraining
-          ? `${character.name}'s LoRA is training — Nano Banana Pro or FLUX Schnell Free generation works in the meantime`
-          : `Optional — Nano Banana Pro and FLUX Schnell Free generation work from reference images alone, but a trained LoRA is cheaper for high-volume generation`
+          ? `${character.name}'s LoRA is training — free providers work in the meantime`
+          : `Optional — free providers work from reference images alone, but a trained LoRA is cheaper for high-volume generation`
       }
     >
       <div className="space-y-5">
@@ -248,18 +216,17 @@ interface GenerateApiResult {
   error?: string;
 }
 
-type Provider = "flux-lora" | "nano-banana-pro" | "flux-schnell-free";
+type Provider = "flux-lora" | "nano-banana-pro" | "flux-schnell-free" | "cf-flux-schnell";
 
 const PROVIDER_LABEL: Record<Provider, string> = {
   "flux-lora": "Flux LoRA",
   "nano-banana-pro": "Nano Banana Pro",
   "flux-schnell-free": "FLUX Schnell Free",
+  "cf-flux-schnell": "CF FLUX Schnell",
 };
 
-/** flux-schnell-free (Together AI) resolves synchronously in /api/generate
- *  — a "succeeded" result there means the image is already stored, not
- *  queued for the poll cron like the fal providers. */
-const SYNCHRONOUS_PROVIDERS: Provider[] = ["flux-schnell-free"];
+/** Providers that resolve synchronously in /api/generate (no poll cron). */
+const SYNCHRONOUS_PROVIDERS: Provider[] = ["flux-schnell-free", "cf-flux-schnell"];
 
 function GenerationForm({
   character,
@@ -334,7 +301,7 @@ function GenerationForm({
       >
         <div className="mb-4 space-y-1.5">
           <p className="text-xs font-medium text-mist">Provider</p>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button
               type="button"
               size="sm"
@@ -361,15 +328,24 @@ function GenerationForm({
             >
               FLUX Schnell Free · $0
             </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={provider === "cf-flux-schnell" ? "default" : "secondary"}
+              onClick={() => setProvider("cf-flux-schnell")}
+            >
+              CF FLUX Schnell · $0
+            </Button>
           </div>
           <p className="text-xs text-mist">
             {provider === "flux-lora"
               ? "Uses the character's trained LoRA weights — cheapest for high-volume generation."
               : provider === "nano-banana-pro"
                 ? "Uses up to 3 of the character's reference uploads directly, no training needed."
-                : "Together AI's FLUX.1-schnell-Free — genuinely free with no daily cap. " +
-                  "Text-to-image only (no reference images), so character identity comes from the " +
-                  "prompt alone. Resolves immediately, no waiting on the poll cron."}
+                : provider === "flux-schnell-free"
+                  ? "Together AI's FLUX.1-schnell-Free — free, no daily cap. Text-to-image only, resolves immediately."
+                  : "Cloudflare Workers AI FLUX.1-schnell — free with a generous daily allowance. " +
+                    "Text-to-image only (no reference images), resolves immediately. Requires CF_ACCOUNT_ID + CF_AI_TOKEN."}
           </p>
         </div>
 

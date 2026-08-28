@@ -27,6 +27,15 @@ const NANO_BANANA_MAX_REFERENCE_IMAGES = 3;
  *  character consistency is required. */
 const TOGETHER_FLUX_SCHNELL_FREE_MODEL = "black-forest-labs/FLUX.1-schnell-Free";
 const TOGETHER_API_URL = "https://api.together.xyz/v1/images/generations";
+
+/** Cloudflare Workers AI — FLUX.1-schnell.
+ *  Free with a generous daily allowance, no credit card required.
+ *  REST endpoint: POST /accounts/{CF_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell
+ *  Response shape: { result: { image: "<base64 png>" } }
+ *  Text-to-image only — no reference-image support. */
+const CF_AI_MODEL = "@cf/black-forest-labs/flux-1-schnell";
+const CF_AI_BASE_URL = "https://api.cloudflare.com/client/v4/accounts";
+
 /** Long-lived signed URL lifetime for generated images uploaded to
  *  Supabase Storage — the character-media bucket isn't public (see
  *  /api/swap's doc comment), and unlike the fal.ai providers there's no
@@ -39,42 +48,27 @@ const GENERATED_ASSET_SIGNED_URL_SECONDS = 60 * 60 * 24 * 365 * 10;
  *
  * Submits one or more reference-image generation calls for a character.
  * Body: { characterId: string, promptKeys: string[], provider?: "flux-lora"
- * | "nano-banana-pro" | "flux-schnell-free" } — defaults to "flux-lora"
- * for callers that don't pass it. Direct provider call from this Next.js
- * route, same pattern as /api/lora/train — not routed through n8n (see
- * ImageBatchPanel's doc comment for why).
+ * | "nano-banana-pro" | "flux-schnell-free" | "cf-flux-schnell" } —
+ * defaults to "flux-lora" for callers that don't pass it.
  *
- * Three providers, deliberately kept side by side rather than one
- * replacing another — they have different tradeoffs:
+ * Four providers, deliberately kept side by side — they have different
+ * tradeoffs:
  *
- * - "flux-lora" — `fal-ai/flux-lora` (FluxLoraInput/Output from the SDK).
- *   Requires a character's LoRA to be `ready`; its `loras` input takes
- *   `lora_models.weights_url` straight through as `path`. ~$0.035/MP once
- *   trained, but needs the $2 / 10-40min training step first.
- * - "nano-banana-pro" — `fal-ai/nano-banana-pro/edit` (Google Gemini 3 Pro
- *   Image via fal). No training, no `loras` field at all: identity comes
- *   from up to NANO_BANANA_MAX_REFERENCE_IMAGES of the character's own
- *   character_uploads, passed as `image_urls`. Works the moment a character
- *   has at least one upload. ~$0.15/image (4-8x flux-lora) — confirmed
- *   against fal's own pricing page, not assumed.
- * - "flux-schnell-free" — Together AI's FLUX.1-schnell-Free endpoint.
- *   Genuinely free with no daily cap (confirmed from Together AI docs).
- *   OpenAI-compatible POST to TOGETHER_API_URL, returns base64 image data
- *   inline. Text-to-image only — does NOT support reference images for
- *   identity consistency; the character's name/description in the prompt
- *   is the only identity signal. Same synchronous/inline-resolve pattern
- *   as the old Gemini branch: no fal queue, no `fal_request_id`, never
- *   seen by the poll-generation cron.
- *
- * `{trigger}` in the prompt template substitutes the LoRA's trigger word
- * for flux-lora, or the generic phrase "this person" for nano-banana-pro,
- * or the character's name for flux-schnell-free (no reference images, so
- * a descriptive name is the only identity hook available).
+ * - "flux-lora" — `fal-ai/flux-lora`. Requires a ready trained LoRA.
+ *   ~$0.035/MP once trained, but needs the $2 / 10-40min training step.
+ * - "nano-banana-pro" — `fal-ai/nano-banana-pro/edit` (Gemini 3 Pro Image
+ *   via fal). No training needed: identity from reference uploads directly.
+ *   ~$0.15/image. Works the moment a character has at least one upload.
+ * - "flux-schnell-free" — Together AI FLUX.1-schnell-Free. Genuinely free,
+ *   no daily cap. Text-to-image only, resolves synchronously inline.
+ * - "cf-flux-schnell" — Cloudflare Workers AI FLUX.1-schnell. Free with a
+ *   generous daily allowance, no credit card required. Text-to-image only,
+ *   resolves synchronously inline. Requires CF_ACCOUNT_ID + CF_AI_TOKEN.
  *
  * flux-lora and nano-banana-pro submit and record `fal_request_id` +
  * `fal_endpoint` per job, then stop — completion is picked up by the
- * generation-poll cron (see /api/cron/poll-generation). flux-schnell-free
- * resolves inline instead and is never seen by that cron.
+ * generation-poll cron. flux-schnell-free and cf-flux-schnell resolve
+ * inline and are never seen by that cron.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -82,9 +76,13 @@ export async function POST(request: NextRequest) {
     const characterId = String(body.characterId ?? "");
     const promptKeys = Array.isArray(body.promptKeys) ? (body.promptKeys as string[]) : [];
     const provider =
-      body.provider === "nano-banana-pro" || body.provider === "flux-schnell-free"
-        ? body.provider
-        : "flux-lora";
+      body.provider === "nano-banana-pro"
+        ? "nano-banana-pro"
+        : body.provider === "flux-schnell-free"
+          ? "flux-schnell-free"
+          : body.provider === "cf-flux-schnell"
+            ? "cf-flux-schnell"
+            : "flux-lora";
 
     if (!characterId || promptKeys.length === 0) {
       return NextResponse.json(
@@ -97,6 +95,13 @@ export async function POST(request: NextRequest) {
       if (!process.env.TOGETHER_API_KEY) {
         return NextResponse.json(
           { error: "TOGETHER_API_KEY is not configured on the server." },
+          { status: 500 }
+        );
+      }
+    } else if (provider === "cf-flux-schnell") {
+      if (!process.env.CF_ACCOUNT_ID || !process.env.CF_AI_TOKEN) {
+        return NextResponse.json(
+          { error: "CF_ACCOUNT_ID and CF_AI_TOKEN must both be set for Cloudflare Workers AI." },
           { status: 500 }
         );
       }
@@ -213,10 +218,8 @@ export async function POST(request: NextRequest) {
           return { promptKey, status: "failed", error: message };
         }
       };
-    } else {
-      // "flux-schnell-free" — Together AI FLUX.1-schnell-Free
-      // Text-to-image only; no reference images. Resolves synchronously
-      // in this request — no fal queue, no poll cron.
+    } else if (provider === "flux-schnell-free") {
+      // Together AI FLUX.1-schnell-Free — synchronous, no poll cron.
       const supabase = getSupabaseServerClient();
 
       submitOne = async (promptKey) => {
@@ -224,8 +227,6 @@ export async function POST(request: NextRequest) {
         if (!template) {
           return { promptKey, status: "failed", error: "Unknown prompt template key." };
         }
-        // No trained trigger word and no reference images — use the
-        // character's name as the best available identity signal.
         const promptText = template.prompt.replace("{trigger}", character.name);
 
         const job = await createGenerationJob({
@@ -247,8 +248,6 @@ export async function POST(request: NextRequest) {
               model: TOGETHER_FLUX_SCHNELL_FREE_MODEL,
               prompt: promptText,
               n: 1,
-              // Together AI returns base64 by default for this model;
-              // explicitly request it to be safe.
               response_format: "b64_json",
             }),
           });
@@ -266,13 +265,12 @@ export async function POST(request: NextRequest) {
             throw new Error("Together AI returned no image data for this prompt.");
           }
 
-          const outputMimeType = "image/png";
           const storagePath = `${characterId}/generated/${randomUUID()}.png`;
           const imageBuffer = Buffer.from(b64, "base64");
 
           const { error: uploadError } = await supabase.storage
             .from("character-media")
-            .upload(storagePath, imageBuffer, { contentType: outputMimeType });
+            .upload(storagePath, imageBuffer, { contentType: "image/png" });
           if (uploadError) {
             throw new Error(`Failed to store generated image: ${uploadError.message}`);
           }
@@ -281,9 +279,7 @@ export async function POST(request: NextRequest) {
             .from("character-media")
             .createSignedUrl(storagePath, GENERATED_ASSET_SIGNED_URL_SECONDS);
           if (signError || !signedUrlData) {
-            throw new Error(
-              `Failed to create a read URL for the generated image: ${signError?.message}`
-            );
+            throw new Error(`Failed to create a read URL: ${signError?.message}`);
           }
 
           const mediaAssetId = await createGeneratedMediaAsset({
@@ -293,14 +289,88 @@ export async function POST(request: NextRequest) {
             label: promptKey,
           });
 
-          await updateGenerationJob(job.id, {
-            status: "succeeded",
-            resultMediaAssetId: mediaAssetId,
+          await updateGenerationJob(job.id, { status: "succeeded", resultMediaAssetId: mediaAssetId });
+          return { promptKey, status: "succeeded" };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Together AI generation failed.";
+          await updateGenerationJob(job.id, { status: "failed", error: message });
+          return { promptKey, status: "failed", error: message };
+        }
+      };
+    } else {
+      // "cf-flux-schnell" — Cloudflare Workers AI FLUX.1-schnell
+      // Synchronous inline resolve, no fal queue, no poll cron.
+      const supabase = getSupabaseServerClient();
+      const cfUrl = `${CF_AI_BASE_URL}/${process.env.CF_ACCOUNT_ID}/ai/run/${CF_AI_MODEL}`;
+
+      submitOne = async (promptKey) => {
+        const template = PROMPT_TEMPLATES.find((t) => t.key === promptKey);
+        if (!template) {
+          return { promptKey, status: "failed", error: "Unknown prompt template key." };
+        }
+        const promptText = template.prompt.replace("{trigger}", character.name);
+
+        const job = await createGenerationJob({
+          characterId,
+          loraModelId: null,
+          promptKey,
+          promptText,
+          falEndpoint: CF_AI_MODEL,
+        });
+
+        try {
+          const cfRes = await fetch(cfUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${process.env.CF_AI_TOKEN}`,
+            },
+            body: JSON.stringify({ prompt: promptText }),
           });
+
+          if (!cfRes.ok) {
+            const errText = await cfRes.text().catch(() => cfRes.statusText);
+            throw new Error(`Cloudflare Workers AI error ${cfRes.status}: ${errText}`);
+          }
+
+          // Cloudflare returns { result: { image: "<base64 png>" } }
+          const cfBody = (await cfRes.json()) as {
+            result?: { image?: string };
+          };
+          const b64 = cfBody.result?.image;
+          if (!b64) {
+            throw new Error("Cloudflare Workers AI returned no image data.");
+          }
+
+          const storagePath = `${characterId}/generated/${randomUUID()}.png`;
+          const imageBuffer = Buffer.from(b64, "base64");
+
+          const { error: uploadError } = await supabase.storage
+            .from("character-media")
+            .upload(storagePath, imageBuffer, { contentType: "image/png" });
+          if (uploadError) {
+            throw new Error(`Failed to store generated image: ${uploadError.message}`);
+          }
+
+          const { data: signedUrlData, error: signError } = await supabase.storage
+            .from("character-media")
+            .createSignedUrl(storagePath, GENERATED_ASSET_SIGNED_URL_SECONDS);
+          if (signError || !signedUrlData) {
+            throw new Error(`Failed to create a read URL: ${signError?.message}`);
+          }
+
+          const mediaAssetId = await createGeneratedMediaAsset({
+            characterId,
+            storagePath,
+            canonicalUrl: signedUrlData.signedUrl,
+            label: promptKey,
+          });
+
+          await updateGenerationJob(job.id, { status: "succeeded", resultMediaAssetId: mediaAssetId });
           return { promptKey, status: "succeeded" };
         } catch (err) {
           const message =
-            err instanceof Error ? err.message : "Together AI generation failed.";
+            err instanceof Error ? err.message : "Cloudflare Workers AI generation failed.";
           await updateGenerationJob(job.id, { status: "failed", error: message });
           return { promptKey, status: "failed", error: message };
         }
