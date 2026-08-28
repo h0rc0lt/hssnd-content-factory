@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fal } from "@fal-ai/client";
 import { getInFlightLoraModels, updateLoraModel } from "@/lib/data/lora-pipeline";
+import { describeFalError } from "@/lib/fal/describe-error";
 
 /**
  * GET /api/cron/poll-training
@@ -63,7 +64,7 @@ export async function GET(request: NextRequest) {
       });
       results.push({ id: model.id, outcome: "ready" });
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Polling failed.";
+      const message = describeFalError(err, "Polling failed.");
       await updateLoraModel(model.id, { status: "failed", error: message });
       results.push({ id: model.id, outcome: "failed" });
     }

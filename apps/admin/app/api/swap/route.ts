@@ -7,6 +7,7 @@ import {
   updateGenerationJob,
 } from "@/lib/data/lora-pipeline";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
+import { describeFalError } from "@/lib/fal/describe-error";
 
 /**
  * POST /api/swap
@@ -107,7 +108,7 @@ export async function POST(request: NextRequest) {
       });
       return NextResponse.json({ job: updated });
     } catch (falErr) {
-      const message = falErr instanceof Error ? falErr.message : "fal.ai submission failed.";
+      const message = describeFalError(falErr, "fal.ai submission failed.");
       await updateGenerationJob(job.id, { status: "failed", error: message });
       return NextResponse.json({ error: message }, { status: 502 });
     }

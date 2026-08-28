@@ -8,6 +8,7 @@ import {
   getCharacterById,
 } from "@/lib/data/lora-pipeline";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
+import { describeFalError } from "@/lib/fal/describe-error";
 
 /**
  * POST /api/lora/train
@@ -25,6 +26,15 @@ import { getSupabaseServerClient } from "@/lib/supabase/server";
  * character's slug as the trigger word — already a unique, human-readable
  * token thanks to the DB's unique constraint on `characters.slug`, and
  * it's what `{trigger}` in prompt-templates.ts expects at generation time.
+ *
+ * `images_data_url` is uploaded to fal's own storage (`fal.storage.upload`)
+ * and passed as the real URL it returns — NOT built as an inline
+ * `data:application/zip;base64,...` string. Confirmed the hard way: fal's
+ * API parses this field as an actual URL and rejects an oversized base64
+ * data URI with `422 Invalid URL: URL too long` once there are more than a
+ * couple of reference images (real production failure, diagnosed via
+ * describeFalError once that started surfacing fal's actual validation
+ * body instead of a bare "Unprocessable Entity").
  *
  * This submits and records the `fal_request_id`, then stops — completion
  * is picked up by the training-poll cron (see /api/cron/poll-training),
@@ -73,13 +83,13 @@ export async function POST(request: NextRequest) {
       }
       zip.file(upload.fileName, await data.arrayBuffer());
     }
-    const zipBase64 = await zip.generateAsync({ type: "base64" });
-    const imagesDataUrl = `data:application/zip;base64,${zipBase64}`;
+    const zipBlob = await zip.generateAsync({ type: "blob" });
     const triggerWord = character.slug;
 
     const loraModel = await createLoraModel(characterId);
 
     try {
+      const imagesDataUrl = await fal.storage.upload(zipBlob);
       const { request_id } = await fal.queue.submit("fal-ai/flux-lora-fast-training", {
         input: { images_data_url: imagesDataUrl, trigger_word: triggerWord },
       });
@@ -93,7 +103,7 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json({ loraModel: updated });
     } catch (falErr) {
-      const message = falErr instanceof Error ? falErr.message : "fal.ai submission failed.";
+      const message = describeFalError(falErr, "fal.ai submission failed.");
       await updateLoraModel(loraModel.id, { status: "failed", error: message });
       return NextResponse.json({ error: message }, { status: 502 });
     }

@@ -5,6 +5,7 @@ import {
   updateGenerationJob,
   createGeneratedMediaAsset,
 } from "@/lib/data/lora-pipeline";
+import { describeFalError } from "@/lib/fal/describe-error";
 
 /**
  * GET /api/cron/poll-generation
@@ -86,7 +87,7 @@ export async function GET(request: NextRequest) {
       });
       results.push({ id: job.id, outcome: "succeeded" });
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Polling failed.";
+      const message = describeFalError(err, "Polling failed.");
       await updateGenerationJob(job.id, { status: "failed", error: message });
       results.push({ id: job.id, outcome: "failed" });
     }

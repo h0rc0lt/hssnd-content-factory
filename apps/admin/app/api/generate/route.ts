@@ -7,6 +7,7 @@ import {
   updateGenerationJob,
 } from "@/lib/data/lora-pipeline";
 import { PROMPT_TEMPLATES } from "@/lib/data/prompt-templates";
+import { describeFalError } from "@/lib/fal/describe-error";
 
 /**
  * POST /api/generate
@@ -96,7 +97,7 @@ export async function POST(request: NextRequest) {
           await updateGenerationJob(job.id, { status: "processing", falRequestId: request_id });
           results.push({ promptKey, status: "processing" });
         } catch (falErr) {
-          const message = falErr instanceof Error ? falErr.message : "fal.ai submission failed.";
+          const message = describeFalError(falErr, "fal.ai submission failed.");
           await updateGenerationJob(job.id, { status: "failed", error: message });
           results.push({ promptKey, status: "failed", error: message });
         }
