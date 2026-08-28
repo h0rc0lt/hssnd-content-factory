@@ -285,6 +285,27 @@ export async function getInFlightGenerationJobs(): Promise<GenerationJob[]> {
   return (data ?? []).map(mapGenerationJobRow);
 }
 
+/** Recent generation jobs for one character — status feedback for the
+ *  Image Batch panel. There's no live polling on the client, same as the
+ *  training flow: this is a snapshot as of the current page load. */
+export async function getGenerationJobsForCharacter(
+  characterId: string,
+  limit = 20
+): Promise<GenerationJob[]> {
+  const supabase = getSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("generation_jobs")
+    .select("*")
+    .eq("character_id", characterId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    throw new Error(`Failed to load generation jobs for character: ${error.message}`);
+  }
+  return (data ?? []).map(mapGenerationJobRow);
+}
+
 // ---------------------------------------------------------------------------
 // media_assets (write side) — the landing spot for a succeeded generation
 // job's output image. Reuses the existing generic media store rather than
@@ -293,7 +314,11 @@ export async function getInFlightGenerationJobs(): Promise<GenerationJob[]> {
 
 export interface CreateGeneratedMediaAssetInput {
   characterId: string;
-  storagePath: string;
+  /** Omitted for LoRA-generated images — canonicalUrl points at fal.ai's
+   *  own hosted output directly rather than a re-uploaded Supabase Storage
+   *  object (storage_path is nullable in the schema for exactly this case,
+   *  same as lora_models.weights_url never gets re-hosted either). */
+  storagePath?: string;
   canonicalUrl: string;
   width?: number;
   height?: number;
@@ -310,7 +335,7 @@ export async function createGeneratedMediaAsset(
       type: "image",
       origin: "fal",
       character_id: input.characterId,
-      storage_path: input.storagePath,
+      storage_path: input.storagePath ?? null,
       canonical_url: input.canonicalUrl,
       width: input.width ?? null,
       height: input.height ?? null,

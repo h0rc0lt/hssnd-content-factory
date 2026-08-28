@@ -1,14 +1,16 @@
-name: Poll LoRA training status
+name: Poll LoRA pipeline status
 
 # Confirmed via Vercel runtime logs that vercel.json's own "crons" entry for
 # /api/cron/poll-training never actually ran: this team is on the Vercel
 # Hobby plan, which silently doesn't register cron schedules more frequent
-# than once a day. This workflow replaces Vercel Cron for that endpoint —
-# GitHub Actions' schedule trigger has no such plan restriction and supports
-# 5-minute intervals on a public repo. The endpoint itself is unchanged; it
-# still checks CRON_SECRET as a bearer token exactly as it did for Vercel
-# Cron (see apps/admin/app/api/cron/poll-training/route.ts), so this only
-# needed a caller, not a code change.
+# than once a day. This workflow replaces Vercel Cron for both LoRA-pipeline
+# poll endpoints — GitHub Actions' schedule trigger has no such plan
+# restriction and supports 5-minute intervals on a public repo. Both
+# endpoints are unchanged; each still checks CRON_SECRET as a bearer token
+# exactly as it did for Vercel Cron (see apps/admin/app/api/cron/*/route.ts),
+# so this only needed a caller, not a code change. Kept as one workflow
+# (two steps) rather than two, since both poll the same LoRA pipeline on
+# the same cadence with the same secret.
 on:
   schedule:
     - cron: "*/5 * * * *"
@@ -21,4 +23,8 @@ jobs:
       - name: Call /api/cron/poll-training
         run: |
           curl -sf -X GET "https://hssnd-content-factory.vercel.app/api/cron/poll-training" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
+      - name: Call /api/cron/poll-generation
+        run: |
+          curl -sf -X GET "https://hssnd-content-factory.vercel.app/api/cron/poll-generation" \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"

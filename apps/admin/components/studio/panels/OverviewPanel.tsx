@@ -34,11 +34,31 @@ export function OverviewPanel({
             description="Run an image batch or motion workflow to see output here."
           />
         ) : (
-          <ul className="space-y-2">
+          <ul className="grid grid-cols-3 gap-2 sm:grid-cols-4">
             {recentMedia.map((m) => (
-              <li key={m.id} className="flex items-center justify-between gap-3 rounded-lg border border-border bg-white/[0.02] px-3 py-2">
-                <span className="truncate text-sm text-paper">{m.label}</span>
-                <StatusBadge status={m.status} />
+              <li
+                key={m.id}
+                className="group relative aspect-square overflow-hidden rounded-lg border border-border bg-white/[0.02]"
+              >
+                {m.type === "image" && m.canonicalUrl ? (
+                  // Plain <img>, not next/image — canonicalUrl is fal.ai's
+                  // own CDN domain, which would need allowlisting in
+                  // next.config.ts's remotePatterns and isn't stable enough
+                  // to pin (see createGeneratedMediaAsset).
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={m.canonicalUrl}
+                    alt={m.label}
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center text-xs text-mist">
+                    {m.label}
+                  </div>
+                )}
+                <div className="absolute bottom-1 right-1">
+                  <StatusBadge status={m.status} className="bg-void/70 backdrop-blur-sm" />
+                </div>
               </li>
             ))}
           </ul>

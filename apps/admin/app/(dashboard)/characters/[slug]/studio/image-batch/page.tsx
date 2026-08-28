@@ -1,7 +1,11 @@
 import { notFound } from "next/navigation";
 import { ImageBatchPanel } from "@/components/studio/panels/ImageBatchPanel";
 import { getCharacterBySlug } from "@/lib/data/characters";
-import { getReferenceSetsForCharacter } from "@/lib/data/studio";
+import {
+  getUploadsForCharacter,
+  getLatestLoraModelForCharacter,
+  getGenerationJobsForCharacter,
+} from "@/lib/data/lora-pipeline";
 
 export default async function ImageBatchPage({
   params,
@@ -12,7 +16,18 @@ export default async function ImageBatchPage({
   const character = await getCharacterBySlug(slug);
   if (!character) notFound();
 
-  const referenceSets = await getReferenceSetsForCharacter(character.id);
+  const [uploads, loraModel, generationJobs] = await Promise.all([
+    getUploadsForCharacter(character.id),
+    getLatestLoraModelForCharacter(character.id),
+    getGenerationJobsForCharacter(character.id),
+  ]);
 
-  return <ImageBatchPanel character={character} referenceSets={referenceSets} />;
+  return (
+    <ImageBatchPanel
+      character={character}
+      uploads={uploads}
+      loraModel={loraModel}
+      generationJobs={generationJobs}
+    />
+  );
 }

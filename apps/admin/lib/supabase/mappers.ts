@@ -99,6 +99,9 @@ export function mapMediaAssetRow(row: MediaAssetRow): MediaAsset {
     type: row.type as MediaAssetType,
     status: row.status as MediaAssetStatus,
     label,
+    canonicalUrl: row.canonical_url,
+    width: row.width,
+    height: row.height,
     createdAt: row.created_at,
   };
 }

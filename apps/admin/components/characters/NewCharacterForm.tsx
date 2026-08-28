@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/ui/badge";
 import { ErrorState } from "@/components/states/ErrorState";
-import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
+import { uploadCharacterReferenceFile } from "@/lib/uploads/character-upload";
 
 /**
  * Character creation + reference upload — Phase 2C.
@@ -80,47 +80,6 @@ export function NewCharacterForm() {
     setFiles((prev) => prev.filter((_, i) => i !== index));
   }
 
-  async function uploadOneFile(characterId: string, file: File): Promise<void> {
-    // Step 1: ask the server for a signed upload URL (small JSON).
-    const signRes = await fetch(`/api/characters/${characterId}/upload-url`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fileName: file.name, mimeType: file.type }),
-    });
-    const signBody = await signRes.json();
-    if (!signRes.ok) {
-      throw new Error(signBody.error ?? `Failed to prepare upload for ${file.name}.`);
-    }
-
-    // Step 2: upload the actual bytes straight to Supabase Storage —
-    // never touches a Vercel Function.
-    const supabase = getSupabaseBrowserClient();
-    const { error: uploadError } = await supabase.storage
-      .from("character-media")
-      .uploadToSignedUrl(signBody.storagePath, signBody.token, file, {
-        contentType: file.type || "application/octet-stream",
-      });
-    if (uploadError) {
-      throw new Error(`Failed to upload ${file.name}: ${uploadError.message}`);
-    }
-
-    // Step 3: record the character_uploads row (small JSON).
-    const recordRes = await fetch(`/api/characters/${characterId}/uploads`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        storagePath: signBody.storagePath,
-        fileName: file.name,
-        mimeType: file.type || "application/octet-stream",
-        fileSizeBytes: file.size,
-      }),
-    });
-    const recordBody = await recordRes.json();
-    if (!recordRes.ok) {
-      throw new Error(recordBody.error ?? `Failed to record upload for ${file.name}.`);
-    }
-  }
-
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -152,7 +111,7 @@ export function NewCharacterForm() {
       for (let i = 0; i < files.length; i++) {
         setProgressLabel(`Uploading image ${i + 1} of ${files.length}…`);
         try {
-          await uploadOneFile(character.id, files[i]);
+          await uploadCharacterReferenceFile(character.id, files[i]);
           successCount += 1;
         } catch (fileErr) {
           // One failed file shouldn't lose the character record or the
