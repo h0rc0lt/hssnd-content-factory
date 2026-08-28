@@ -1,7 +1,6 @@
 import { randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { fal } from "@fal-ai/client";
-import { GoogleGenAI } from "@google/genai";
 import {
   getCharacterById,
   getLatestLoraModelForCharacter,
@@ -20,23 +19,19 @@ const NANO_BANANA_ENDPOINT = "fal-ai/nano-banana-pro/edit";
  *  request down. */
 const NANO_BANANA_MAX_REFERENCE_IMAGES = 3;
 
-/** Marker stored in generation_jobs.fal_endpoint for the direct-Gemini
- *  provider — not actually a fal.ai endpoint (this provider never touches
- *  fal), but the column doubles as "which API/model produced this job" and
- *  the poll-generation cron only ever looks at jobs with a fal_request_id,
- *  which this provider never sets (see submitOne below), so it's a safe
- *  reuse rather than a schema change for one more provider. */
-const GEMINI_FLASH_IMAGE_MODEL = "gemini-2.5-flash-image";
-/** Same reasoning as NANO_BANANA_MAX_REFERENCE_IMAGES — plain Nano Banana
- *  (Gemini 2.5 Flash Image) via the direct Google API, same identity
- *  pattern as nano-banana-pro (reference images, no trained LoRA). */
-const GEMINI_MAX_REFERENCE_IMAGES = 3;
+/** Together AI FLUX.1-schnell-Free: genuinely free with no daily cap,
+ *  confirmed from Together AI's own documentation. OpenAI-compatible
+ *  images/generations endpoint — returns base64 image data inline
+ *  (synchronous, no queue/poller needed). Text-to-image only — does NOT
+ *  support reference-image identity; use Flux LoRA or Nano Banana Pro when
+ *  character consistency is required. */
+const TOGETHER_FLUX_SCHNELL_FREE_MODEL = "black-forest-labs/FLUX.1-schnell-Free";
+const TOGETHER_API_URL = "https://api.together.xyz/v1/images/generations";
 /** Long-lived signed URL lifetime for generated images uploaded to
  *  Supabase Storage — the character-media bucket isn't public (see
  *  /api/swap's doc comment), and unlike the fal.ai providers there's no
- *  provider-hosted CDN URL to point canonicalUrl at directly, since Gemini
- *  returns raw image bytes in the response body. ~10 years, effectively
- *  permanent for a personal tool with no rotation story. */
+ *  provider-hosted CDN URL to point canonicalUrl at directly. ~10 years,
+ *  effectively permanent for a personal tool with no rotation story. */
 const GENERATED_ASSET_SIGNED_URL_SECONDS = 60 * 60 * 24 * 365 * 10;
 
 /**
@@ -44,53 +39,42 @@ const GENERATED_ASSET_SIGNED_URL_SECONDS = 60 * 60 * 24 * 365 * 10;
  *
  * Submits one or more reference-image generation calls for a character.
  * Body: { characterId: string, promptKeys: string[], provider?: "flux-lora"
- * | "nano-banana-pro" | "nano-banana" } — defaults to "flux-lora" for
- * callers that don't pass it. Direct provider call from this Next.js
+ * | "nano-banana-pro" | "flux-schnell-free" } — defaults to "flux-lora"
+ * for callers that don't pass it. Direct provider call from this Next.js
  * route, same pattern as /api/lora/train — not routed through n8n (see
  * ImageBatchPanel's doc comment for why).
  *
  * Three providers, deliberately kept side by side rather than one
- * replacing another — they have opposite tradeoffs (see ImageBatchPanel's
- * doc comment and the README):
+ * replacing another — they have different tradeoffs:
  *
- * - "flux-lora" — `fal-ai/flux-lora` (confirmed from the installed SDK's
- *   generated types, FluxLoraInput/Output aliased from `unoOutput`).
+ * - "flux-lora" — `fal-ai/flux-lora` (FluxLoraInput/Output from the SDK).
  *   Requires a character's LoRA to be `ready`; its `loras` input takes
  *   `lora_models.weights_url` straight through as `path`. ~$0.035/MP once
  *   trained, but needs the $2 / 10-40min training step first.
  * - "nano-banana-pro" — `fal-ai/nano-banana-pro/edit` (Google Gemini 3 Pro
- *   Image via fal, confirmed the same way — NanoBananaProEditInput/Output).
- *   No training, no `loras` field at all: identity comes from up to
- *   NANO_BANANA_MAX_REFERENCE_IMAGES of the character's own
- *   character_uploads, passed as `image_urls` (short-lived signed read
- *   URLs — the character-media bucket isn't public). Works the moment a
- *   character has at least one upload. ~$0.15/image (4-8x flux-lora) —
- *   confirmed against fal's own pricing page, not assumed.
- * - "nano-banana" — the base (non-Pro) Gemini 2.5 Flash Image model,
- *   called *directly* against the Google Gemini API (`@google/genai`, NOT
- *   fal.ai — there's no fal wrapper needed since Gemini's own free tier is
- *   the entire point). 500 requests/day free, then per-image billing —
- *   confirmed against Google's own published rate limits, not assumed.
- *   Same reference-image identity pattern as nano-banana-pro, but the
- *   images have to be downloaded from Supabase Storage and base64-inlined
- *   into the request (`inlineData`) rather than passed as URLs — Gemini
- *   has no equivalent of fal's `image_urls`. Also architecturally
- *   different from the other two: `generateContent()` is synchronous and
- *   returns the finished image bytes in the same HTTP response, so this
- *   branch resolves the generation_jobs row to succeeded/failed inline
- *   rather than submitting to a queue and leaving it for the poller (see
- *   GEMINI_FLASH_IMAGE_MODEL above).
+ *   Image via fal). No training, no `loras` field at all: identity comes
+ *   from up to NANO_BANANA_MAX_REFERENCE_IMAGES of the character's own
+ *   character_uploads, passed as `image_urls`. Works the moment a character
+ *   has at least one upload. ~$0.15/image (4-8x flux-lora) — confirmed
+ *   against fal's own pricing page, not assumed.
+ * - "flux-schnell-free" — Together AI's FLUX.1-schnell-Free endpoint.
+ *   Genuinely free with no daily cap (confirmed from Together AI docs).
+ *   OpenAI-compatible POST to TOGETHER_API_URL, returns base64 image data
+ *   inline. Text-to-image only — does NOT support reference images for
+ *   identity consistency; the character's name/description in the prompt
+ *   is the only identity signal. Same synchronous/inline-resolve pattern
+ *   as the old Gemini branch: no fal queue, no `fal_request_id`, never
+ *   seen by the poll-generation cron.
  *
  * `{trigger}` in the prompt template substitutes the LoRA's trigger word
- * for flux-lora, or the generic phrase "this person" for the two
- * reference-image providers — there's no trained token for it to refer to;
- * the reference images alone carry the identity there.
+ * for flux-lora, or the generic phrase "this person" for nano-banana-pro,
+ * or the character's name for flux-schnell-free (no reference images, so
+ * a descriptive name is the only identity hook available).
  *
  * flux-lora and nano-banana-pro submit and record `fal_request_id` +
  * `fal_endpoint` per job, then stop — completion is picked up by the
- * generation-poll cron (see /api/cron/poll-generation, which branches on
- * fal_endpoint the same way). nano-banana resolves inline instead (see
- * above) and is never seen by that cron.
+ * generation-poll cron (see /api/cron/poll-generation). flux-schnell-free
+ * resolves inline instead and is never seen by that cron.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -98,7 +82,7 @@ export async function POST(request: NextRequest) {
     const characterId = String(body.characterId ?? "");
     const promptKeys = Array.isArray(body.promptKeys) ? (body.promptKeys as string[]) : [];
     const provider =
-      body.provider === "nano-banana-pro" || body.provider === "nano-banana"
+      body.provider === "nano-banana-pro" || body.provider === "flux-schnell-free"
         ? body.provider
         : "flux-lora";
 
@@ -109,10 +93,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (provider === "nano-banana") {
-      if (!process.env.GEMINI_API_KEY) {
+    if (provider === "flux-schnell-free") {
+      if (!process.env.TOGETHER_API_KEY) {
         return NextResponse.json(
-          { error: "GEMINI_API_KEY is not configured on the server." },
+          { error: "TOGETHER_API_KEY is not configured on the server." },
           { status: 500 }
         );
       }
@@ -230,79 +214,61 @@ export async function POST(request: NextRequest) {
         }
       };
     } else {
-      const uploads = await getUploadsForCharacter(characterId);
-      if (uploads.length === 0) {
-        return NextResponse.json(
-          { error: "This character has no uploaded reference images yet." },
-          { status: 400 }
-        );
-      }
-
+      // "flux-schnell-free" — Together AI FLUX.1-schnell-Free
+      // Text-to-image only; no reference images. Resolves synchronously
+      // in this request — no fal queue, no poll cron.
       const supabase = getSupabaseServerClient();
-      const referenceUploads = uploads.slice(0, GEMINI_MAX_REFERENCE_IMAGES);
-      const referenceImages = await Promise.all(
-        referenceUploads.map(async (upload) => {
-          const { data, error } = await supabase.storage
-            .from("character-media")
-            .download(upload.storagePath);
-          if (error || !data) return null;
-          const buffer = Buffer.from(await data.arrayBuffer());
-          return { mimeType: upload.mimeType, data: buffer.toString("base64") };
-        })
-      );
-      const validReferenceImages = referenceImages.filter(
-        (img): img is { mimeType: string; data: string } => img !== null
-      );
-      if (validReferenceImages.length === 0) {
-        return NextResponse.json(
-          { error: "Failed to read reference images from storage." },
-          { status: 500 }
-        );
-      }
-
-      const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
       submitOne = async (promptKey) => {
         const template = PROMPT_TEMPLATES.find((t) => t.key === promptKey);
         if (!template) {
           return { promptKey, status: "failed", error: "Unknown prompt template key." };
         }
-        const promptText = template.prompt.replace("{trigger}", "this person");
+        // No trained trigger word and no reference images — use the
+        // character's name as the best available identity signal.
+        const promptText = template.prompt.replace("{trigger}", character.name);
 
         const job = await createGenerationJob({
           characterId,
           loraModelId: null,
           promptKey,
           promptText,
-          falEndpoint: GEMINI_FLASH_IMAGE_MODEL,
+          falEndpoint: TOGETHER_FLUX_SCHNELL_FREE_MODEL,
         });
 
         try {
-          const response = await genAI.models.generateContent({
-            model: GEMINI_FLASH_IMAGE_MODEL,
-            contents: [
-              {
-                role: "user",
-                parts: [
-                  { text: promptText },
-                  ...validReferenceImages.map((img) => ({
-                    inlineData: { mimeType: img.mimeType, data: img.data },
-                  })),
-                ],
-              },
-            ],
+          const togetherRes = await fetch(TOGETHER_API_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${process.env.TOGETHER_API_KEY}`,
+            },
+            body: JSON.stringify({
+              model: TOGETHER_FLUX_SCHNELL_FREE_MODEL,
+              prompt: promptText,
+              n: 1,
+              // Together AI returns base64 by default for this model;
+              // explicitly request it to be safe.
+              response_format: "b64_json",
+            }),
           });
 
-          const parts = response.candidates?.[0]?.content?.parts ?? [];
-          const imagePart = parts.find((part) => part.inlineData?.data);
-          if (!imagePart?.inlineData?.data) {
-            throw new Error("Gemini returned no image data for this prompt.");
+          if (!togetherRes.ok) {
+            const errText = await togetherRes.text().catch(() => togetherRes.statusText);
+            throw new Error(`Together AI error ${togetherRes.status}: ${errText}`);
           }
 
-          const outputMimeType = imagePart.inlineData.mimeType ?? "image/png";
-          const ext = outputMimeType === "image/jpeg" ? "jpg" : "png";
-          const storagePath = `${characterId}/generated/${randomUUID()}.${ext}`;
-          const imageBuffer = Buffer.from(imagePart.inlineData.data, "base64");
+          const togetherBody = (await togetherRes.json()) as {
+            data?: { b64_json?: string }[];
+          };
+          const b64 = togetherBody.data?.[0]?.b64_json;
+          if (!b64) {
+            throw new Error("Together AI returned no image data for this prompt.");
+          }
+
+          const outputMimeType = "image/png";
+          const storagePath = `${characterId}/generated/${randomUUID()}.png`;
+          const imageBuffer = Buffer.from(b64, "base64");
 
           const { error: uploadError } = await supabase.storage
             .from("character-media")
@@ -332,9 +298,9 @@ export async function POST(request: NextRequest) {
             resultMediaAssetId: mediaAssetId,
           });
           return { promptKey, status: "succeeded" };
-        } catch (geminiErr) {
+        } catch (err) {
           const message =
-            geminiErr instanceof Error ? geminiErr.message : "Gemini generation failed.";
+            err instanceof Error ? err.message : "Together AI generation failed.";
           await updateGenerationJob(job.id, { status: "failed", error: message });
           return { promptKey, status: "failed", error: message };
         }

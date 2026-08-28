@@ -55,6 +55,10 @@ export function ImageBatchPanel({
   // one, generation is possible even before (or without ever) training a
   // LoRA; the LoRA card stays visible alongside it until training is done,
   // since Flux LoRA is still the cheaper option once it's ready.
+  // FLUX Schnell Free works from zero uploads too (text-to-image only),
+  // but we still require at least one upload before showing the generation
+  // form — keeps the UX flow consistent and prompts the user to add some
+  // reference material before generating.
   if (uploads.length === 0) {
     return <TrainingSetup character={character} uploads={uploads} loraModel={loraModel} />;
   }
@@ -148,8 +152,8 @@ export function TrainingSetup({
       title={isTraining ? "Training in progress" : "Train a Flux LoRA"}
       description={
         isTraining
-          ? `${character.name}'s LoRA is training — Nano Banana Pro generation works in the meantime`
-          : `Optional — Nano Banana Pro generation works from reference images alone, but a trained LoRA is cheaper for high-volume generation`
+          ? `${character.name}'s LoRA is training — Nano Banana Pro or FLUX Schnell Free generation works in the meantime`
+          : `Optional — Nano Banana Pro and FLUX Schnell Free generation work from reference images alone, but a trained LoRA is cheaper for high-volume generation`
       }
     >
       <div className="space-y-5">
@@ -244,18 +248,18 @@ interface GenerateApiResult {
   error?: string;
 }
 
-type Provider = "flux-lora" | "nano-banana-pro" | "nano-banana";
+type Provider = "flux-lora" | "nano-banana-pro" | "flux-schnell-free";
 
 const PROVIDER_LABEL: Record<Provider, string> = {
   "flux-lora": "Flux LoRA",
   "nano-banana-pro": "Nano Banana Pro",
-  "nano-banana": "Nano Banana",
+  "flux-schnell-free": "FLUX Schnell Free",
 };
 
-/** nano-banana (direct Gemini API) resolves synchronously in /api/generate
+/** flux-schnell-free (Together AI) resolves synchronously in /api/generate
  *  — a "succeeded" result there means the image is already stored, not
- *  queued for the poll cron like the other two providers. */
-const SYNCHRONOUS_PROVIDERS: Provider[] = ["nano-banana"];
+ *  queued for the poll cron like the fal providers. */
+const SYNCHRONOUS_PROVIDERS: Provider[] = ["flux-schnell-free"];
 
 function GenerationForm({
   character,
@@ -352,10 +356,10 @@ function GenerationForm({
             <Button
               type="button"
               size="sm"
-              variant={provider === "nano-banana" ? "default" : "secondary"}
-              onClick={() => setProvider("nano-banana")}
+              variant={provider === "flux-schnell-free" ? "default" : "secondary"}
+              onClick={() => setProvider("flux-schnell-free")}
             >
-              Nano Banana · 500 free/day
+              FLUX Schnell Free · $0
             </Button>
           </div>
           <p className="text-xs text-mist">
@@ -363,9 +367,9 @@ function GenerationForm({
               ? "Uses the character's trained LoRA weights — cheapest for high-volume generation."
               : provider === "nano-banana-pro"
                 ? "Uses up to 3 of the character's reference uploads directly, no training needed."
-                : "Google's Gemini API directly (not fal.ai) — same reference-upload approach as " +
-                  "Nano Banana Pro, but free for the first 500 requests/day, then billed. Resolves " +
-                  "immediately, no waiting on the poll cron."}
+                : "Together AI's FLUX.1-schnell-Free — genuinely free with no daily cap. " +
+                  "Text-to-image only (no reference images), so character identity comes from the " +
+                  "prompt alone. Resolves immediately, no waiting on the poll cron."}
           </p>
         </div>
 
