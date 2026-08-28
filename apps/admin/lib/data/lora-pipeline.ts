@@ -211,16 +211,21 @@ export async function getInFlightLoraModels(): Promise<LoraModel[]> {
 
 export interface CreateGenerationJobInput {
   characterId: string;
-  /** Null for a nano-banana-pro job — it has no trained LoRA to reference,
-   *  identity comes from reference images passed straight to fal instead. */
+  /** Null for a reference-image-based job (nano-banana / nano-banana-pro)
+   *  — it has no trained LoRA to reference, identity comes from reference
+   *  images passed straight to the provider instead. */
   loraModelId: string | null;
   promptKey: string;
   promptText: string;
   /** Defaults to "fal-ai/flux-lora" (the Image Batch text-to-image
    *  endpoint) via the DB column default — pass "fal-ai/flux-lora/image-to-image"
-   *  for a Character Swap job, or "fal-ai/nano-banana-pro/edit" for a
-   *  reference-image-based Image Batch job. */
+   *  for a Character Swap job, or a kie.ai model id (e.g.
+   *  "google/nano-banana-edit") for a kie.ai job. */
   falEndpoint?: string;
+  /** Defaults to "fal" via the DB column default. Pass "kie.ai" for a job
+   *  resolved by the kie.ai webhook instead of the fal poll cron — see
+   *  types/generation-job.ts and migration add_generation_jobs_provider. */
+  provider?: GenerationJob["provider"];
 }
 
 export async function createGenerationJob(
@@ -235,6 +240,7 @@ export async function createGenerationJob(
       prompt_key: input.promptKey,
       prompt_text: input.promptText,
       ...(input.falEndpoint !== undefined && { fal_endpoint: input.falEndpoint }),
+      ...(input.provider !== undefined && { provider: input.provider }),
     })
     .select("*")
     .single();
@@ -278,12 +284,17 @@ export async function updateGenerationJob(
   return mapGenerationJobRow(data);
 }
 
-/** Queried by the generation-poll cron for every job still in flight. */
+/** Queried by the generation-poll cron for every fal job still in flight.
+ *  Scoped to provider="fal" — kie.ai jobs are resolved by their own webhook
+ *  (/api/webhooks/kie) instead, never by this poll, even though they also
+ *  carry a non-null fal_request_id (kie.ai's taskId, reused generically —
+ *  see types/generation-job.ts). */
 export async function getInFlightGenerationJobs(): Promise<GenerationJob[]> {
   const supabase = getSupabaseServerClient();
   const { data, error } = await supabase
     .from("generation_jobs")
     .select("*")
+    .eq("provider", "fal")
     .in("status", ["queued", "processing"])
     .not("fal_request_id", "is", null);
 
@@ -291,6 +302,26 @@ export async function getInFlightGenerationJobs(): Promise<GenerationJob[]> {
     throw new Error(`Failed to load in-flight generation jobs: ${error.message}`);
   }
   return (data ?? []).map(mapGenerationJobRow);
+}
+
+/** Looked up by /api/webhooks/kie using the taskId kie.ai's callback body
+ *  carries — the same id this job's fal_request_id was set to at submit
+ *  time (see /api/generate's kie.ai branch). */
+export async function getGenerationJobByProviderJobId(
+  providerJobId: string
+): Promise<GenerationJob | null> {
+  const supabase = getSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("generation_jobs")
+    .select("*")
+    .eq("provider", "kie.ai")
+    .eq("fal_request_id", providerJobId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Failed to load generation job by provider job id: ${error.message}`);
+  }
+  return data ? mapGenerationJobRow(data) : null;
 }
 
 /** Recent generation jobs for one character — status feedback for the

@@ -216,17 +216,13 @@ interface GenerateApiResult {
   error?: string;
 }
 
-type Provider = "flux-lora" | "nano-banana-pro" | "flux-schnell-free" | "cf-flux-schnell";
+type Provider = "flux-lora" | "nano-banana-pro" | "nano-banana";
 
 const PROVIDER_LABEL: Record<Provider, string> = {
   "flux-lora": "Flux LoRA",
   "nano-banana-pro": "Nano Banana Pro",
-  "flux-schnell-free": "FLUX Schnell Free",
-  "cf-flux-schnell": "CF FLUX Schnell",
+  "nano-banana": "Nano Banana",
 };
-
-/** Providers that resolve synchronously in /api/generate (no poll cron). */
-const SYNCHRONOUS_PROVIDERS: Provider[] = ["flux-schnell-free", "cf-flux-schnell"];
 
 function GenerationForm({
   character,
@@ -263,15 +259,13 @@ function GenerationForm({
       const results = (body.results ?? []) as GenerateApiResult[];
       const failedCount = results.filter((r) => r.status === "failed").length;
       const okCount = promptKeys.length - failedCount;
-      const isSync = SYNCHRONOUS_PROVIDERS.includes(provider);
+      const isKie = provider === "nano-banana-pro" || provider === "nano-banana";
       setQueuedMessage(
-        isSync
-          ? `Generated ${okCount} of ${promptKeys.length} image${promptKeys.length === 1 ? "" : "s"} ` +
-              `via ${PROVIDER_LABEL[provider]}. They're already stored — refresh Overview → Recent media ` +
-              "to see them."
-          : `Queued ${okCount} of ${promptKeys.length} image${promptKeys.length === 1 ? "" : "s"} ` +
-              `via ${PROVIDER_LABEL[provider]}. They'll appear in Overview → Recent media once the poll ` +
-              "cron picks up completion (every 5 minutes)."
+        `Queued ${okCount} of ${promptKeys.length} image${promptKeys.length === 1 ? "" : "s"} ` +
+          `via ${PROVIDER_LABEL[provider]}. They'll appear in Overview → Recent media once ` +
+          (isKie
+            ? "kie.ai's webhook delivers the result (usually well under a minute)."
+            : "the poll cron picks up completion (every 5 minutes).")
       );
       router.refresh();
     } catch (err) {
@@ -318,34 +312,23 @@ function GenerationForm({
               variant={provider === "nano-banana-pro" ? "default" : "secondary"}
               onClick={() => setProvider("nano-banana-pro")}
             >
-              Nano Banana Pro · ~$0.15/image
+              Nano Banana Pro · ~$0.12/image
             </Button>
             <Button
               type="button"
               size="sm"
-              variant={provider === "flux-schnell-free" ? "default" : "secondary"}
-              onClick={() => setProvider("flux-schnell-free")}
+              variant={provider === "nano-banana" ? "default" : "secondary"}
+              onClick={() => setProvider("nano-banana")}
             >
-              FLUX Schnell Free · $0
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant={provider === "cf-flux-schnell" ? "default" : "secondary"}
-              onClick={() => setProvider("cf-flux-schnell")}
-            >
-              CF FLUX Schnell · $0
+              Nano Banana · ~$0.02/image
             </Button>
           </div>
           <p className="text-xs text-mist">
             {provider === "flux-lora"
               ? "Uses the character's trained LoRA weights — cheapest for high-volume generation."
-              : provider === "nano-banana-pro"
-                ? "Uses up to 3 of the character's reference uploads directly, no training needed."
-                : provider === "flux-schnell-free"
-                  ? "Together AI's FLUX.1-schnell-Free — free, no daily cap. Text-to-image only, resolves immediately."
-                  : "Cloudflare Workers AI FLUX.1-schnell — free with a generous daily allowance. " +
-                    "Text-to-image only (no reference images), resolves immediately. Requires CF_ACCOUNT_ID + CF_AI_TOKEN."}
+              : "Uses up to 3 of the character's reference uploads directly, no training needed. " +
+                "Via kie.ai (not fal.ai directly) — cheaper, and delivers results by webhook " +
+                "instead of waiting on the poll cron."}
           </p>
         </div>
 

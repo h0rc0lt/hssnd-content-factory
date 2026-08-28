@@ -437,6 +437,7 @@ export interface Database {
           prompt_key: string;
           prompt_text: string;
           status: string;
+          provider: string;
           fal_request_id: string | null;
           fal_endpoint: string;
           result_media_asset_id: string | null;
@@ -451,6 +452,7 @@ export interface Database {
           prompt_key: string;
           prompt_text: string;
           status?: string;
+          provider?: string;
           fal_request_id?: string | null;
           fal_endpoint?: string;
           result_media_asset_id?: string | null;

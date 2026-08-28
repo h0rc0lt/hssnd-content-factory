@@ -6,7 +6,7 @@ import type { WorkflowRun, WorkflowRunStatus, WorkflowTriggerSource, WorkflowTyp
 import type { ScheduledPost, ScheduledPostStatus, Platform } from "@/types/scheduled-post";
 import type { CharacterUpload, CharacterUploadStatus } from "@/types/character-upload";
 import type { LoraModel, LoraModelStatus } from "@/types/lora-model";
-import type { GenerationJob, GenerationJobStatus } from "@/types/generation-job";
+import type { GenerationJob, GenerationJobStatus, GenerationJobProvider } from "@/types/generation-job";
 import type { Database } from "./database.types";
 
 /**
@@ -201,6 +201,7 @@ export function mapGenerationJobRow(row: GenerationJobRow): GenerationJob {
     promptKey: row.prompt_key,
     promptText: row.prompt_text,
     status: row.status as GenerationJobStatus,
+    provider: row.provider as GenerationJobProvider,
     falRequestId: row.fal_request_id,
     falEndpoint: row.fal_endpoint,
     resultMediaAssetId: row.result_media_asset_id,

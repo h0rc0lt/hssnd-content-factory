@@ -1,4 +1,3 @@
-import { randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { fal } from "@fal-ai/client";
 import {
@@ -7,68 +6,73 @@ import {
   getUploadsForCharacter,
   createGenerationJob,
   updateGenerationJob,
-  createGeneratedMediaAsset,
 } from "@/lib/data/lora-pipeline";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { PROMPT_TEMPLATES } from "@/lib/data/prompt-templates";
 import { describeFalError } from "@/lib/fal/describe-error";
+import { submitKieTask } from "@/lib/kie/client";
 
-const NANO_BANANA_ENDPOINT = "fal-ai/nano-banana-pro/edit";
-/** Reference images sent per nano-banana-pro/edit call — more than a
- *  handful doesn't meaningfully improve identity match and only slows the
- *  request down. */
-const NANO_BANANA_MAX_REFERENCE_IMAGES = 3;
-
-/** Together AI FLUX.1-schnell-Free: genuinely free with no daily cap,
- *  confirmed from Together AI's own documentation. OpenAI-compatible
- *  images/generations endpoint — returns base64 image data inline
- *  (synchronous, no queue/poller needed). Text-to-image only — does NOT
- *  support reference-image identity; use Flux LoRA or Nano Banana Pro when
- *  character consistency is required. */
-const TOGETHER_FLUX_SCHNELL_FREE_MODEL = "black-forest-labs/FLUX.1-schnell-Free";
-const TOGETHER_API_URL = "https://api.together.xyz/v1/images/generations";
-
-/** Cloudflare Workers AI — FLUX.1-schnell.
- *  Free with a generous daily allowance, no credit card required.
- *  REST endpoint: POST /accounts/{CF_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell
- *  Response shape: { result: { image: "<base64 png>" } }
- *  Text-to-image only — no reference-image support. */
-const CF_AI_MODEL = "@cf/black-forest-labs/flux-1-schnell";
-const CF_AI_BASE_URL = "https://api.cloudflare.com/client/v4/accounts";
-
-/** Long-lived signed URL lifetime for generated images uploaded to
- *  Supabase Storage — the character-media bucket isn't public (see
- *  /api/swap's doc comment), and unlike the fal.ai providers there's no
- *  provider-hosted CDN URL to point canonicalUrl at directly. ~10 years,
- *  effectively permanent for a personal tool with no rotation story. */
-const GENERATED_ASSET_SIGNED_URL_SECONDS = 60 * 60 * 24 * 365 * 10;
+/** kie.ai model ids — see lib/kie/client.ts's doc comment on how these
+ *  were sourced (kie.ai's docs are blocked by this environment's network
+ *  egress proxy, so cross-referenced from third-party sources instead of
+ *  the primary docs, unlike every other provider in this app). */
+const KIE_NANO_BANANA_MODEL = "google/nano-banana-edit";
+const KIE_NANO_BANANA_PRO_MODEL = "nano-banana-pro";
+/** Reference images sent per kie.ai call — more than a handful doesn't
+ *  meaningfully improve identity match and only slows the request down. */
+const KIE_MAX_REFERENCE_IMAGES = 3;
 
 /**
  * POST /api/generate
  *
  * Submits one or more reference-image generation calls for a character.
  * Body: { characterId: string, promptKeys: string[], provider?: "flux-lora"
- * | "nano-banana-pro" | "flux-schnell-free" | "cf-flux-schnell" } —
- * defaults to "flux-lora" for callers that don't pass it.
+ * | "nano-banana-pro" | "nano-banana" } — defaults to "flux-lora" for
+ * callers that don't pass it. Direct provider call from this Next.js
+ * route, same pattern as /api/lora/train — not routed through n8n (see
+ * ImageBatchPanel's doc comment for why).
  *
- * Four providers, deliberately kept side by side — they have different
- * tradeoffs:
+ * Three providers, deliberately kept side by side rather than one
+ * replacing another — they have opposite tradeoffs (see ImageBatchPanel's
+ * doc comment and the README):
  *
- * - "flux-lora" — `fal-ai/flux-lora`. Requires a ready trained LoRA.
- *   ~$0.035/MP once trained, but needs the $2 / 10-40min training step.
- * - "nano-banana-pro" — `fal-ai/nano-banana-pro/edit` (Gemini 3 Pro Image
- *   via fal). No training needed: identity from reference uploads directly.
- *   ~$0.15/image. Works the moment a character has at least one upload.
- * - "flux-schnell-free" — Together AI FLUX.1-schnell-Free. Genuinely free,
- *   no daily cap. Text-to-image only, resolves synchronously inline.
- * - "cf-flux-schnell" — Cloudflare Workers AI FLUX.1-schnell. Free with a
- *   generous daily allowance, no credit card required. Text-to-image only,
- *   resolves synchronously inline. Requires CF_ACCOUNT_ID + CF_AI_TOKEN.
+ * - "flux-lora" — `fal-ai/flux-lora` on fal.ai (confirmed from the
+ *   installed SDK's generated types, FluxLoraInput/Output aliased from
+ *   `unoOutput`). Requires a character's LoRA to be `ready`; its `loras`
+ *   input takes `lora_models.weights_url` straight through as `path`.
+ *   ~$0.035/MP once trained, but needs the $2 / 10-40min training step
+ *   first.
+ * - "nano-banana-pro" / "nano-banana" — both on **kie.ai**. Two earlier
+ *   approaches were tried and abandoned here (see README for the full
+ *   history): fal.ai's `nano-banana-pro/edit` repeatedly sat "processing"
+ *   for 20+ minutes because of the GitHub Actions poll cron's unreliable
+ *   schedule trigger; a genuinely-free swap to Together AI's
+ *   FLUX.1-schnell-Free and Cloudflare Workers AI was tried next but is
+ *   **text-to-image only** — it has no reference-image mechanism at all,
+ *   so it can't produce a consistent likeness of the character and was
+ *   confirmed useless for this app's actual purpose (character-consistent
+ *   image generation) via live testing. kie.ai resells both Nano Banana
+ *   models cheaper than fal.ai/Google's own pricing ($0.02 vs $0.039 for
+ *   plain Nano Banana, ~$0.12 vs $0.15 for Pro) and, more importantly,
+ *   supports webhook delivery (`callBackUrl`) instead of requiring a
+ *   poll — see /api/webhooks/kie, which resolves these jobs the moment
+ *   kie.ai is done rather than waiting on the same flaky poll cron.
+ *   Identity comes from up to KIE_MAX_REFERENCE_IMAGES of the character's
+ *   own character_uploads, passed as `image_urls` (short-lived signed
+ *   read URLs — the character-media bucket isn't public).
  *
- * flux-lora and nano-banana-pro submit and record `fal_request_id` +
- * `fal_endpoint` per job, then stop — completion is picked up by the
- * generation-poll cron. flux-schnell-free and cf-flux-schnell resolve
- * inline and are never seen by that cron.
+ * `{trigger}` in the prompt template substitutes the LoRA's trigger word
+ * for flux-lora, or the generic phrase "this person" for the two
+ * reference-image providers — there's no trained token for it to refer to;
+ * the reference images alone carry the identity there.
+ *
+ * All three providers submit and record a job id (`fal_request_id`, reused
+ * generically — see types/generation-job.ts) + `fal_endpoint`, then stop.
+ * flux-lora is picked up by the generation-poll cron (see
+ * /api/cron/poll-generation); nano-banana-pro/nano-banana are picked up by
+ * kie.ai's webhook (/api/webhooks/kie) instead — see `provider` on
+ * createGenerationJob, which the poll cron's query filters on so it never
+ * touches a kie.ai job.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -76,13 +80,9 @@ export async function POST(request: NextRequest) {
     const characterId = String(body.characterId ?? "");
     const promptKeys = Array.isArray(body.promptKeys) ? (body.promptKeys as string[]) : [];
     const provider =
-      body.provider === "nano-banana-pro"
-        ? "nano-banana-pro"
-        : body.provider === "flux-schnell-free"
-          ? "flux-schnell-free"
-          : body.provider === "cf-flux-schnell"
-            ? "cf-flux-schnell"
-            : "flux-lora";
+      body.provider === "nano-banana-pro" || body.provider === "nano-banana"
+        ? body.provider
+        : "flux-lora";
 
     if (!characterId || promptKeys.length === 0) {
       return NextResponse.json(
@@ -91,21 +91,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (provider === "flux-schnell-free") {
-      if (!process.env.TOGETHER_API_KEY) {
-        return NextResponse.json(
-          { error: "TOGETHER_API_KEY is not configured on the server." },
-          { status: 500 }
-        );
-      }
-    } else if (provider === "cf-flux-schnell") {
-      if (!process.env.CF_ACCOUNT_ID || !process.env.CF_AI_TOKEN) {
-        return NextResponse.json(
-          { error: "CF_ACCOUNT_ID and CF_AI_TOKEN must both be set for Cloudflare Workers AI." },
-          { status: 500 }
-        );
-      }
-    } else {
+    if (provider === "flux-lora") {
       const falKey = process.env.FAL_KEY;
       if (!falKey) {
         return NextResponse.json(
@@ -114,6 +100,19 @@ export async function POST(request: NextRequest) {
         );
       }
       fal.config({ credentials: falKey });
+    } else {
+      if (!process.env.KIE_API_KEY) {
+        return NextResponse.json(
+          { error: "KIE_API_KEY is not configured on the server." },
+          { status: 500 }
+        );
+      }
+      if (!process.env.APP_BASE_URL || !process.env.KIE_WEBHOOK_SECRET) {
+        return NextResponse.json(
+          { error: "APP_BASE_URL and KIE_WEBHOOK_SECRET are not configured on the server." },
+          { status: 500 }
+        );
+      }
     }
 
     const character = await getCharacterById(characterId);
@@ -150,6 +149,7 @@ export async function POST(request: NextRequest) {
           loraModelId: loraModel.id,
           promptKey,
           promptText,
+          provider: "fal",
           falEndpoint: "fal-ai/flux-lora",
         });
 
@@ -165,7 +165,7 @@ export async function POST(request: NextRequest) {
           return { promptKey, status: "failed", error: message };
         }
       };
-    } else if (provider === "nano-banana-pro") {
+    } else {
       const uploads = await getUploadsForCharacter(characterId);
       if (uploads.length === 0) {
         return NextResponse.json(
@@ -175,10 +175,10 @@ export async function POST(request: NextRequest) {
       }
 
       const supabase = getSupabaseServerClient();
-      const referenceUploads = uploads.slice(0, NANO_BANANA_MAX_REFERENCE_IMAGES);
+      const referenceUploads = uploads.slice(0, KIE_MAX_REFERENCE_IMAGES);
       const signedUrls = await Promise.all(
         referenceUploads.map((upload) =>
-          supabase.storage.from("character-media").createSignedUrl(upload.storagePath, 60)
+          supabase.storage.from("character-media").createSignedUrl(upload.storagePath, 60 * 30)
         )
       );
       const imageUrls = signedUrls
@@ -190,6 +190,9 @@ export async function POST(request: NextRequest) {
           { status: 500 }
         );
       }
+
+      const kieModel = provider === "nano-banana-pro" ? KIE_NANO_BANANA_PRO_MODEL : KIE_NANO_BANANA_MODEL;
+      const callBackUrl = `${process.env.APP_BASE_URL}/api/webhooks/kie?secret=${process.env.KIE_WEBHOOK_SECRET}`;
 
       submitOne = async (promptKey) => {
         const template = PROMPT_TEMPLATES.find((t) => t.key === promptKey);
@@ -203,174 +206,21 @@ export async function POST(request: NextRequest) {
           loraModelId: null,
           promptKey,
           promptText,
-          falEndpoint: NANO_BANANA_ENDPOINT,
+          provider: "kie.ai",
+          falEndpoint: kieModel,
         });
 
         try {
-          const { request_id } = await fal.queue.submit(NANO_BANANA_ENDPOINT, {
-            input: { prompt: promptText, image_urls: imageUrls, num_images: 1 },
+          const { taskId } = await submitKieTask({
+            model: kieModel,
+            prompt: promptText,
+            imageUrls,
+            callBackUrl,
           });
-          await updateGenerationJob(job.id, { status: "processing", falRequestId: request_id });
+          await updateGenerationJob(job.id, { status: "processing", falRequestId: taskId });
           return { promptKey, status: "processing" };
-        } catch (falErr) {
-          const message = describeFalError(falErr, "fal.ai submission failed.");
-          await updateGenerationJob(job.id, { status: "failed", error: message });
-          return { promptKey, status: "failed", error: message };
-        }
-      };
-    } else if (provider === "flux-schnell-free") {
-      // Together AI FLUX.1-schnell-Free — synchronous, no poll cron.
-      const supabase = getSupabaseServerClient();
-
-      submitOne = async (promptKey) => {
-        const template = PROMPT_TEMPLATES.find((t) => t.key === promptKey);
-        if (!template) {
-          return { promptKey, status: "failed", error: "Unknown prompt template key." };
-        }
-        const promptText = template.prompt.replace("{trigger}", character.name);
-
-        const job = await createGenerationJob({
-          characterId,
-          loraModelId: null,
-          promptKey,
-          promptText,
-          falEndpoint: TOGETHER_FLUX_SCHNELL_FREE_MODEL,
-        });
-
-        try {
-          const togetherRes = await fetch(TOGETHER_API_URL, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${process.env.TOGETHER_API_KEY}`,
-            },
-            body: JSON.stringify({
-              model: TOGETHER_FLUX_SCHNELL_FREE_MODEL,
-              prompt: promptText,
-              n: 1,
-              response_format: "b64_json",
-            }),
-          });
-
-          if (!togetherRes.ok) {
-            const errText = await togetherRes.text().catch(() => togetherRes.statusText);
-            throw new Error(`Together AI error ${togetherRes.status}: ${errText}`);
-          }
-
-          const togetherBody = (await togetherRes.json()) as {
-            data?: { b64_json?: string }[];
-          };
-          const b64 = togetherBody.data?.[0]?.b64_json;
-          if (!b64) {
-            throw new Error("Together AI returned no image data for this prompt.");
-          }
-
-          const storagePath = `${characterId}/generated/${randomUUID()}.png`;
-          const imageBuffer = Buffer.from(b64, "base64");
-
-          const { error: uploadError } = await supabase.storage
-            .from("character-media")
-            .upload(storagePath, imageBuffer, { contentType: "image/png" });
-          if (uploadError) {
-            throw new Error(`Failed to store generated image: ${uploadError.message}`);
-          }
-
-          const { data: signedUrlData, error: signError } = await supabase.storage
-            .from("character-media")
-            .createSignedUrl(storagePath, GENERATED_ASSET_SIGNED_URL_SECONDS);
-          if (signError || !signedUrlData) {
-            throw new Error(`Failed to create a read URL: ${signError?.message}`);
-          }
-
-          const mediaAssetId = await createGeneratedMediaAsset({
-            characterId,
-            storagePath,
-            canonicalUrl: signedUrlData.signedUrl,
-            label: promptKey,
-          });
-
-          await updateGenerationJob(job.id, { status: "succeeded", resultMediaAssetId: mediaAssetId });
-          return { promptKey, status: "succeeded" };
-        } catch (err) {
-          const message = err instanceof Error ? err.message : "Together AI generation failed.";
-          await updateGenerationJob(job.id, { status: "failed", error: message });
-          return { promptKey, status: "failed", error: message };
-        }
-      };
-    } else {
-      // "cf-flux-schnell" — Cloudflare Workers AI FLUX.1-schnell
-      // Synchronous inline resolve, no fal queue, no poll cron.
-      const supabase = getSupabaseServerClient();
-      const cfUrl = `${CF_AI_BASE_URL}/${process.env.CF_ACCOUNT_ID}/ai/run/${CF_AI_MODEL}`;
-
-      submitOne = async (promptKey) => {
-        const template = PROMPT_TEMPLATES.find((t) => t.key === promptKey);
-        if (!template) {
-          return { promptKey, status: "failed", error: "Unknown prompt template key." };
-        }
-        const promptText = template.prompt.replace("{trigger}", character.name);
-
-        const job = await createGenerationJob({
-          characterId,
-          loraModelId: null,
-          promptKey,
-          promptText,
-          falEndpoint: CF_AI_MODEL,
-        });
-
-        try {
-          const cfRes = await fetch(cfUrl, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${process.env.CF_AI_TOKEN}`,
-            },
-            body: JSON.stringify({ prompt: promptText }),
-          });
-
-          if (!cfRes.ok) {
-            const errText = await cfRes.text().catch(() => cfRes.statusText);
-            throw new Error(`Cloudflare Workers AI error ${cfRes.status}: ${errText}`);
-          }
-
-          // Cloudflare returns { result: { image: "<base64 png>" } }
-          const cfBody = (await cfRes.json()) as {
-            result?: { image?: string };
-          };
-          const b64 = cfBody.result?.image;
-          if (!b64) {
-            throw new Error("Cloudflare Workers AI returned no image data.");
-          }
-
-          const storagePath = `${characterId}/generated/${randomUUID()}.png`;
-          const imageBuffer = Buffer.from(b64, "base64");
-
-          const { error: uploadError } = await supabase.storage
-            .from("character-media")
-            .upload(storagePath, imageBuffer, { contentType: "image/png" });
-          if (uploadError) {
-            throw new Error(`Failed to store generated image: ${uploadError.message}`);
-          }
-
-          const { data: signedUrlData, error: signError } = await supabase.storage
-            .from("character-media")
-            .createSignedUrl(storagePath, GENERATED_ASSET_SIGNED_URL_SECONDS);
-          if (signError || !signedUrlData) {
-            throw new Error(`Failed to create a read URL: ${signError?.message}`);
-          }
-
-          const mediaAssetId = await createGeneratedMediaAsset({
-            characterId,
-            storagePath,
-            canonicalUrl: signedUrlData.signedUrl,
-            label: promptKey,
-          });
-
-          await updateGenerationJob(job.id, { status: "succeeded", resultMediaAssetId: mediaAssetId });
-          return { promptKey, status: "succeeded" };
-        } catch (err) {
-          const message =
-            err instanceof Error ? err.message : "Cloudflare Workers AI generation failed.";
+        } catch (kieErr) {
+          const message = kieErr instanceof Error ? kieErr.message : "kie.ai submission failed.";
           await updateGenerationJob(job.id, { status: "failed", error: message });
           return { promptKey, status: "failed", error: message };
         }
