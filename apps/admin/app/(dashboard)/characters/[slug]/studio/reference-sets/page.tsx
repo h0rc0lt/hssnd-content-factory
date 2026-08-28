@@ -14,5 +14,5 @@ export default async function ReferenceSetsPage({
 
   const referenceSets = await getReferenceSetsForCharacter(character.id);
 
-  return <ReferenceSetsPanel referenceSets={referenceSets} />;
+  return <ReferenceSetsPanel referenceSets={referenceSets} characterId={character.id} />;
 }
