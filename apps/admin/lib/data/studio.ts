@@ -47,6 +47,40 @@ export async function getReferenceSetsForCharacter(characterId: string): Promise
   return ((data as unknown as ReferenceSetRowWithCount[]) ?? []).map(mapReferenceSetRow);
 }
 
+/**
+ * Creates a new reference set for a character.
+ * Returns the freshly inserted row mapped to the ReferenceSet type.
+ */
+export async function createReferenceSet({
+  characterId,
+  name,
+  description,
+  tags = [],
+}: {
+  characterId: string;
+  name: string;
+  description?: string;
+  tags?: string[];
+}): Promise<ReferenceSet> {
+  const supabase = getSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("reference_sets")
+    .insert({
+      character_id: characterId,
+      name,
+      description: description ?? null,
+      tags,
+      status: "active",
+    })
+    .select("*, reference_set_items(count)")
+    .single();
+
+  if (error) {
+    throw new Error(`Failed to create reference set: ${error.message}`);
+  }
+  return mapReferenceSetRow(data as unknown as ReferenceSetRowWithCount);
+}
+
 export async function getMotionTemplateLibrary(): Promise<MotionTemplate[]> {
   const supabase = getSupabaseServerClient();
   const { data, error } = await supabase
@@ -79,10 +113,6 @@ export async function getMotionUsageForCharacter(characterId: string): Promise<M
     throw new Error(`Failed to load motion usage: ${error.message}`);
   }
 
-  // Hand-written database.types.ts lacks the Relationships metadata real
-  // generated types include, which the query builder needs to correctly
-  // infer partial-select shapes — explicit cast here, not a runtime risk
-  // (the actual columns selected are exactly these two).
   const rows = (data ?? []) as { motion_template_id: string | null; created_at: string }[];
 
   const byTemplate = new Map<string, { outputCount: number; lastUsedAt: string }>();
