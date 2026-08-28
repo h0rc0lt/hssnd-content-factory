@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { fal } from "@fal-ai/client";
 import { getLoraModelByProviderJobId, updateLoraModel } from "@/lib/data/lora-pipeline";
 import type { WavespeedWebhookPayload } from "@/lib/wavespeed/client";
 
@@ -24,9 +25,21 @@ import type { WavespeedWebhookPayload } from "@/lib/wavespeed/client";
  * this is — wavespeed.ai's docs are blocked by this environment's egress
  * proxy): flat JSON `{ id, model, status, outputs?, error? }`. On
  * "completed", `outputs[0]` is the trained LoRA's downloadable
- * `.safetensors` URL — stored directly as `weightsUrl`, exactly like a
- * fal.ai-trained model's `diffusers_lora_file.url`, so /api/generate and
- * /api/swap need no changes to consume it.
+ * `.safetensors` URL.
+ *
+ * That URL is NOT stored as `weightsUrl` directly — real-world testing
+ * (this app's first live wavespeed training run) hit fal.ai returning a
+ * bare `403 Forbidden` when /api/generate passed the wavespeed CDN URL
+ * straight through as `loras[0].path`. This is a known fal.ai behavior,
+ * not specific to wavespeed: fal.ai's own community has reported the same
+ * 403 for third-party LoRA URLs (Civitai, Cloudflare R2 — see
+ * github.com/fal-ai/fal/issues/903), apparently trusting only its own
+ * storage. The fix mirrors what /api/lora/train already does for the
+ * training zip: download the `.safetensors` bytes and re-upload them to
+ * **fal's own storage** (`fal.storage.upload`), then store that fal-hosted
+ * URL as `weightsUrl` instead. This keeps /api/generate and /api/swap
+ * completely unchanged — they still just consume an opaque URL — at the
+ * cost of one extra download+upload hop per training run.
  */
 export async function POST(request: NextRequest) {
   const secret = request.nextUrl.searchParams.get("secret");
@@ -48,12 +61,33 @@ export async function POST(request: NextRequest) {
   }
 
   if (payload.status === "completed") {
-    const weightsUrl = payload.outputs?.[0];
-    if (!weightsUrl) {
+    const wavespeedWeightsUrl = payload.outputs?.[0];
+    if (!wavespeedWeightsUrl) {
       await updateLoraModel(loraModel.id, {
         status: "failed",
         error: "wavespeed.ai reported completion but returned no output URL.",
       });
+      return NextResponse.json({ received: true });
+    }
+
+    let weightsUrl: string;
+    try {
+      const falKey = process.env.FAL_KEY;
+      if (!falKey) throw new Error("FAL_KEY is not configured on the server.");
+      fal.config({ credentials: falKey });
+
+      const fileRes = await fetch(wavespeedWeightsUrl);
+      if (!fileRes.ok) {
+        throw new Error(`Failed to download trained weights from wavespeed.ai (HTTP ${fileRes.status}).`);
+      }
+      const fileBlob = await fileRes.blob();
+      weightsUrl = await fal.storage.upload(fileBlob);
+    } catch (rehostErr) {
+      const message =
+        rehostErr instanceof Error
+          ? rehostErr.message
+          : "Failed to re-host trained weights on fal.ai storage.";
+      await updateLoraModel(loraModel.id, { status: "failed", error: message });
       return NextResponse.json({ received: true });
     }
 
