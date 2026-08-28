@@ -15,16 +15,24 @@ import {
  * sub-daily Vercel Cron schedules; see poll-training/route.ts).
  *
  * For every `generation_jobs` row still "queued"/"processing" with a
- * `fal_request_id`, checks fal's queue status on `fal-ai/flux-lora`. On
- * COMPLETED, takes `images[0]` from the result (`unoOutput`, confirmed from
- * the installed SDK's generated types — always at least one image since
- * num_images defaults to 1 and this app never overrides it) and records a
+ * `fal_request_id`, checks fal's queue status on that row's `fal_endpoint`
+ * (Image Batch and Character Swap submit to different fal.ai endpoints —
+ * see migration add_generation_jobs_fal_endpoint). `fal.queue.status`
+ * accepts a plain string endpoint id, but `fal.queue.result` is generic
+ * over a literal endpoint type for input/output inference, so the branch
+ * below calls it with a literal at each arm rather than the dynamic
+ * `job.falEndpoint` string — both known endpoints return the same
+ * `unoOutput` shape (confirmed from the installed SDK's generated types)
+ * so the rest of the handling is identical either way. On COMPLETED, takes
+ * `images[0]` from the result (always at least one image since num_images
+ * defaults to 1 and this app never overrides it) and records a
  * `media_assets` row pointing straight at fal's hosted image URL (no
  * re-upload to Supabase Storage — see createGeneratedMediaAsset), then
  * links it back onto the generation_jobs row via resultMediaAssetId. Same
  * indirect failure detection as the training poller: a result fetch that
  * throws is treated as a failed run.
  */
+const IMAGE_TO_IMAGE_ENDPOINT = "fal-ai/flux-lora/image-to-image";
 export async function GET(request: NextRequest) {
   const authHeader = request.headers.get("authorization");
   const cronSecret = process.env.CRON_SECRET;
@@ -45,7 +53,7 @@ export async function GET(request: NextRequest) {
     if (!job.falRequestId) continue;
 
     try {
-      const status = await fal.queue.status("fal-ai/flux-lora", {
+      const status = await fal.queue.status(job.falEndpoint, {
         requestId: job.falRequestId,
         logs: false,
       });
@@ -55,9 +63,10 @@ export async function GET(request: NextRequest) {
         continue;
       }
 
-      const result = await fal.queue.result("fal-ai/flux-lora", {
-        requestId: job.falRequestId,
-      });
+      const result =
+        job.falEndpoint === IMAGE_TO_IMAGE_ENDPOINT
+          ? await fal.queue.result(IMAGE_TO_IMAGE_ENDPOINT, { requestId: job.falRequestId })
+          : await fal.queue.result("fal-ai/flux-lora", { requestId: job.falRequestId });
       const image = result.data.images[0];
       if (!image) {
         throw new Error("fal.ai returned no images for this job.");

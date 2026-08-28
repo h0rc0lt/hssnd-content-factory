@@ -214,6 +214,10 @@ export interface CreateGenerationJobInput {
   loraModelId: string;
   promptKey: string;
   promptText: string;
+  /** Defaults to "fal-ai/flux-lora" (the Image Batch text-to-image
+   *  endpoint) via the DB column default — pass "fal-ai/flux-lora/image-to-image"
+   *  for a Character Swap job. */
+  falEndpoint?: string;
 }
 
 export async function createGenerationJob(
@@ -227,6 +231,7 @@ export async function createGenerationJob(
       lora_model_id: input.loraModelId,
       prompt_key: input.promptKey,
       prompt_text: input.promptText,
+      ...(input.falEndpoint !== undefined && { fal_endpoint: input.falEndpoint }),
     })
     .select("*")
     .single();

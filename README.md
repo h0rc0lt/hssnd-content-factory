@@ -19,8 +19,8 @@ Phase 1.
 
 ## Status
 
-**Phase 2D — LoRA-driven image generation.** `apps/admin` is wired to real
-Supabase data end to end:
+**Phase 2E — Media Library and Character Swap.** `apps/admin` is wired to
+real Supabase data end to end:
 
 - Phase 2A laid down the UI shell (`DashboardShell`, Character Studio, state
   components) on typed mock data.
@@ -40,20 +40,32 @@ Supabase data end to end:
   both: it doubles as the only place an *existing* character can add more
   reference uploads or (re)start training, since that flow previously only
   existed during character creation.
+- Phase 2E added the Media Library (cross-character gallery of every
+  generated/uploaded asset, filterable by character and type — the first
+  "Soon"-marked nav item to go live) and Character Swap
+  (`POST /api/swap`, `fal-ai/flux-lora/image-to-image` — applies a
+  character's trained identity onto a user-supplied source image, keeping
+  its pose/composition). Character Swap reuses the same generation_jobs /
+  poll-generation-cron / media_assets pipeline as Image Batch, distinguished
+  by a new `fal_endpoint` column (migration
+  `add_generation_jobs_fal_endpoint`) since the two features submit to
+  different fal.ai queue endpoints.
 
 Both pollers are triggered every 5 minutes by
 `.github/workflows/poll-training.yml` rather than Vercel Cron, since this
 team's Vercel Hobby plan silently doesn't run cron schedules more frequent
 than once a day. Every page and API route except `/api/cron/*` sits behind
 HTTP Basic Auth (`apps/admin/middleware.ts`) — this repo is public and its
-routes are guessable, and both `/api/lora/train` and `/api/generate`
-trigger real, billed fal.ai jobs per call.
+routes are guessable, and `/api/lora/train`, `/api/generate`, and
+`/api/swap` all trigger real, billed fal.ai jobs per call — Character Swap
+and video (Motion Control, not yet built) cost meaningfully more per call
+than a still image.
 
 There is still no n8n integration and no OpenClaw integration in this repo.
-Character Swap, Motion Control, and the Scheduler remain read-only/unwired
-— see the Studio panels for what's left. RLS is enabled with zero policies
-on all tables (intentional — blocks all non-service-role access until a
-staff-auth model is decided).
+Motion Control and the Scheduler remain read-only/unwired, and Reference
+Sets creation is still disabled — see the Studio panels for what's left.
+RLS is enabled with zero policies on all tables (intentional — blocks all
+non-service-role access until a staff-auth model is decided).
 
 Nothing in this codebase is specific to any one character — "Zaranyx" in
 the mock data is one example row, not a special case.

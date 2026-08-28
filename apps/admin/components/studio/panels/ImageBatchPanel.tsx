@@ -69,7 +69,10 @@ export function ImageBatchPanel({
   return <GenerationForm character={character} generationJobs={generationJobs} />;
 }
 
-function TrainingSetup({
+/** Exported so CharacterSwapPanel can reuse it — there's still only one
+ *  place uploads/training happen for an existing character, and Character
+ *  Swap needs a ready LoRA exactly the same way Image Batch does. */
+export function TrainingSetup({
   character,
   uploads,
   loraModel,

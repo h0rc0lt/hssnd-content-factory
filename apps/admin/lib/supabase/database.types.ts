@@ -438,6 +438,7 @@ export interface Database {
           prompt_text: string;
           status: string;
           fal_request_id: string | null;
+          fal_endpoint: string;
           result_media_asset_id: string | null;
           error: string | null;
           created_at: string;
@@ -451,6 +452,7 @@ export interface Database {
           prompt_text: string;
           status?: string;
           fal_request_id?: string | null;
+          fal_endpoint?: string;
           result_media_asset_id?: string | null;
           error?: string | null;
           created_at?: string;

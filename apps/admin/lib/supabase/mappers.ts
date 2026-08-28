@@ -202,6 +202,7 @@ export function mapGenerationJobRow(row: GenerationJobRow): GenerationJob {
     promptText: row.prompt_text,
     status: row.status as GenerationJobStatus,
     falRequestId: row.fal_request_id,
+    falEndpoint: row.fal_endpoint,
     resultMediaAssetId: row.result_media_asset_id,
     error: row.error,
     createdAt: row.created_at,

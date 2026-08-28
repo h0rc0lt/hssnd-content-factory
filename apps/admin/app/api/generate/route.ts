@@ -82,6 +82,7 @@ export async function POST(request: NextRequest) {
           loraModelId: loraModel.id,
           promptKey,
           promptText,
+          falEndpoint: "fal-ai/flux-lora",
         });
 
         try {
