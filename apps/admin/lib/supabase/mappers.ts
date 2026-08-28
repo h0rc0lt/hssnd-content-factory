@@ -5,7 +5,7 @@ import type { MediaAsset, MediaAssetStatus, MediaAssetType } from "@/types/media
 import type { WorkflowRun, WorkflowRunStatus, WorkflowTriggerSource, WorkflowType } from "@/types/workflow";
 import type { ScheduledPost, ScheduledPostStatus, Platform } from "@/types/scheduled-post";
 import type { CharacterUpload, CharacterUploadStatus } from "@/types/character-upload";
-import type { LoraModel, LoraModelStatus } from "@/types/lora-model";
+import type { LoraModel, LoraModelStatus, LoraModelProvider } from "@/types/lora-model";
 import type { GenerationJob, GenerationJobStatus, GenerationJobProvider } from "@/types/generation-job";
 import type { Database } from "./database.types";
 
@@ -179,6 +179,7 @@ export function mapLoraModelRow(row: LoraModelRow): LoraModel {
     id: row.id,
     characterId: row.character_id,
     status: row.status as LoraModelStatus,
+    provider: row.provider as LoraModelProvider,
     falRequestId: row.fal_request_id,
     baseModel: row.base_model,
     triggerWord: row.trigger_word,

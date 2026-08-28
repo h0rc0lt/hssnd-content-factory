@@ -117,11 +117,20 @@ export async function getUploadsForCharacter(characterId: string): Promise<Chara
 // lora_models
 // ---------------------------------------------------------------------------
 
-export async function createLoraModel(characterId: string): Promise<LoraModel> {
+/** `provider` defaults to "fal" via the DB column default; pass
+ *  "wavespeed" for a training run submitted to wavespeed.ai instead (see
+ *  types/lora-model.ts and migration add_lora_models_provider). */
+export async function createLoraModel(
+  characterId: string,
+  provider?: LoraModel["provider"]
+): Promise<LoraModel> {
   const supabase = getSupabaseServerClient();
   const { data, error } = await supabase
     .from("lora_models")
-    .insert({ character_id: characterId })
+    .insert({
+      character_id: characterId,
+      ...(provider !== undefined && { provider }),
+    })
     .select("*")
     .single();
 
@@ -190,12 +199,17 @@ export async function getLatestLoraModelForCharacter(
   return data ? mapLoraModelRow(data) : null;
 }
 
-/** Queried by the training-poll cron for every run still in flight. */
+/** Queried by the training-poll cron for every fal run still in flight.
+ *  Scoped to provider="fal" — wavespeed runs are resolved by their own
+ *  webhook (/api/webhooks/wavespeed) instead, never by this poll, even
+ *  though they also carry a non-null fal_request_id (wavespeed's own task
+ *  id, reused generically — see types/lora-model.ts). */
 export async function getInFlightLoraModels(): Promise<LoraModel[]> {
   const supabase = getSupabaseServerClient();
   const { data, error } = await supabase
     .from("lora_models")
     .select("*")
+    .eq("provider", "fal")
     .in("status", ["queued", "training"])
     .not("fal_request_id", "is", null);
 
@@ -203,6 +217,26 @@ export async function getInFlightLoraModels(): Promise<LoraModel[]> {
     throw new Error(`Failed to load in-flight LoRA models: ${error.message}`);
   }
   return (data ?? []).map(mapLoraModelRow);
+}
+
+/** Looked up by /api/webhooks/wavespeed using the task id wavespeed's
+ *  callback body carries — the same id this row's fal_request_id was set
+ *  to at submit time (see /api/lora/train's wavespeed branch). */
+export async function getLoraModelByProviderJobId(
+  providerJobId: string
+): Promise<LoraModel | null> {
+  const supabase = getSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("lora_models")
+    .select("*")
+    .eq("provider", "wavespeed")
+    .eq("fal_request_id", providerJobId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Failed to load LoRA model by provider job id: ${error.message}`);
+  }
+  return data ? mapLoraModelRow(data) : null;
 }
 
 // ---------------------------------------------------------------------------

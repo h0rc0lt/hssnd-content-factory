@@ -11,8 +11,15 @@ import { describeFalError } from "@/lib/fal/describe-error";
  * docs) — this route rejects anything else, so it can't be triggered by a
  * stray public GET.
  *
- * For every `lora_models` row still "queued"/"training" with a
- * `fal_request_id`, checks fal's queue status. On COMPLETED, fetches the
+ * For every `lora_models` row still "queued"/"training" with
+ * provider="fal" and a `fal_request_id` (see getInFlightLoraModels),
+ * checks fal's queue status. New training runs go through wavespeed.ai
+ * instead (see /api/lora/train) and are resolved by
+ * /api/webhooks/wavespeed rather than this poll — getInFlightLoraModels
+ * already filters this query down to provider="fal" so a wavespeed run's
+ * foreign task id (also stored in fal_request_id — see
+ * types/lora-model.ts) never gets handed to fal.queue.status. On
+ * COMPLETED, fetches the
  * result and records `weights_url` from `diffusers_lora_file.url`. Both
  * the field name and its type (a required `url: string` on a `File`
  * object) come directly from the installed @fal-ai/client SDK's own

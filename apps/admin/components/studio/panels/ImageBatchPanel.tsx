@@ -120,8 +120,8 @@ export function TrainingSetup({
       title={isTraining ? "Training in progress" : "Train a Flux LoRA"}
       description={
         isTraining
-          ? `${character.name}'s LoRA is training — free providers work in the meantime`
-          : `Optional — free providers work from reference images alone, but a trained LoRA is cheaper for high-volume generation`
+          ? `${character.name}'s LoRA is training — Nano Banana/Nano Banana Pro work in the meantime`
+          : `Optional — Nano Banana/Nano Banana Pro work from reference images alone, but a trained LoRA is cheaper for high-volume generation`
       }
     >
       <div className="space-y-5">
@@ -129,7 +129,8 @@ export function TrainingSetup({
           <div className="flex items-center gap-3 rounded-lg border border-border bg-white/[0.02] px-4 py-3">
             <StatusBadge status={loraModel.status} />
             <p className="text-sm text-mist">
-              Refresh this page to check progress — the poll cron checks fal.ai every 5 minutes.
+              Refresh this page to check progress — wavespeed.ai delivers the result by webhook
+              (usually within a few minutes).
             </p>
           </div>
         )}

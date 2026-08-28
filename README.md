@@ -19,8 +19,8 @@ Phase 1.
 
 ## Status
 
-**Phase 2J — kie.ai for Image Batch's reference-image providers.**
-`apps/admin` is wired to real Supabase data end to end:
+**Phase 2K — wavespeed.ai for LoRA training.** `apps/admin` is wired to
+real Supabase data end to end:
 
 - Phase 2A laid down the UI shell (`DashboardShell`, Character Studio, state
   components) on typed mock data.
@@ -102,44 +102,69 @@ Phase 1.
   `/api/cron/poll-generation`, which is why `generation_jobs` gained a
   `provider` column (migration `add_generation_jobs_provider`) — the poll
   cron's in-flight query filters to `provider="fal"` so it never touches a
-  kie.ai job's foreign task id. Flux LoRA training and generation stay on
-  fal.ai on purpose: Astria.ai was considered as a training replacement
-  too (also webhook-based, would have fixed the training poller's same lag
-  issue), but Astria doesn't expose a portable weights file the way fal
-  does, which would have broken Character Swap for any newly-trained
-  character — not worth it for a personal tool where the training poller
-  lag is already tolerable via manual `workflow_dispatch`. One honesty
+  kie.ai job's foreign task id. Flux LoRA *generation* and Character Swap
+  stayed on fal.ai at this point — Astria.ai was considered as a training
+  replacement too (also webhook-based, would have fixed the training
+  poller's same lag issue), but Astria doesn't expose a portable weights
+  file the way fal does, which would have broken Character Swap for any
+  newly-trained character. (Training itself moved off fal.ai in Phase 2K
+  below, to a provider that *does* expose portable weights.) One honesty
   note: kie.ai's own docs (`docs.kie.ai`) are blocked by this environment's
   network egress proxy, so `lib/kie/client.ts`'s request/response shape was
   cross-referenced from search results and third-party write-ups rather
   than kie.ai's primary documentation or an installed SDK's types — every
   other provider integration in this app was verified that way, this one
   wasn't, so a live-test mismatch here is more likely than usual.
+- Phase 2K moved LoRA **training** itself to **wavespeed.ai**
+  (`flux-dev-lora-trainer`), leaving fal.ai for generation and Character
+  Swap unchanged. Two reasons: cheaper (~$1/run vs fal's ~$2), and its
+  `?webhook=` query param pushes the result the moment training finishes
+  instead of requiring a poll — see `/api/webhooks/wavespeed`, which fixes
+  the *other* half of the poller-lag problem (training runs had sat
+  "training" for 20+ minutes on this same flaky schedule trigger, same as
+  the generation jobs Phase 2J already fixed). This is a training-only
+  swap by design: wavespeed's trainer returns a downloadable
+  `.safetensors` file (confirmed via search results, not the primary
+  docs — same confidence caveat as kie.ai above), the same format fal.ai's
+  trainer produces, so `/api/generate` and `/api/swap` needed **zero**
+  changes — they already only ever treat `weights_url` as an opaque URL
+  passed straight to fal's `loras: [{ path: weightsUrl }]` input,
+  regardless of which provider trained it. `lora_models` gained a
+  `provider` column (migration `add_lora_models_provider`) so
+  `/api/cron/poll-training`'s in-flight query can filter to
+  `provider="fal"` the same way `generation_jobs.provider` already does
+  for Phase 2J.
 
 This project's own testing surfaced two real bugs worth knowing about if
 something looks stuck: (1) `/api/lora/train` originally built
 `images_data_url` as an inline base64 data URI, which fal.ai rejects past a
 certain size with a `422 URL too long` — fixed by uploading the zip via
-`fal.storage.upload()` and passing the real URL it returns instead; (2) the
-GitHub Actions poller's `schedule` trigger is best-effort, not guaranteed —
-it has gone quiet for 20 minutes to close to two hours in practice, on
-multiple separate occasions. If a training or Flux LoRA generation job
-looks stuck, manually re-run `.github/workflows/poll-training.yml`
-(`workflow_dispatch`) rather than assuming something is broken — this is
-exactly why Phase 2J moved the two reference-image providers off polling
-entirely.
+`fal.storage.upload()` and passing the real URL it returns instead (this
+bug predates the Phase 2K move off fal.ai for training, but the same
+"upload to the provider's own storage first, never inline a big base64
+string" lesson carried over to wavespeed's integration); (2) the GitHub
+Actions poller's `schedule` trigger is best-effort, not guaranteed — it
+has gone quiet for 20 minutes to close to two hours in practice, on
+multiple separate occasions, for both training and generation jobs. If a
+Flux LoRA generation or Character Swap job looks stuck, manually re-run
+`.github/workflows/poll-training.yml` (`workflow_dispatch`) rather than
+assuming something is broken — training and the two kie.ai Image Batch
+providers are no longer affected by this at all (see Phases 2J and 2K).
 
 The training poller is still triggered every 5 minutes by
 `.github/workflows/poll-training.yml` rather than Vercel Cron, since this
 team's Vercel Hobby plan silently doesn't run cron schedules more frequent
-than once a day; it also still covers Flux LoRA generation and Character
-Swap (both still on fal.ai). Every page and API route except `/api/cron/*`
-and `/api/webhooks/*` sits behind HTTP Basic Auth (`apps/admin/middleware.ts`)
-— this repo is public and its routes are guessable, `/api/webhooks/kie` is
-gated by its own `?secret=` check instead (kie.ai can't send Basic Auth),
-and `/api/lora/train`, `/api/generate`, and `/api/swap` all trigger real,
-billed jobs per call — Character Swap and video (Motion Control, not yet
-built) cost meaningfully more per call than a Flux LoRA still image.
+than once a day; it now only covers Flux LoRA generation and Character
+Swap (both still on fal.ai) — training and the two kie.ai providers are
+webhook-resolved and never touch this poller. Every page and API route
+except `/api/cron/*` and `/api/webhooks/*` sits behind HTTP Basic Auth
+(`apps/admin/middleware.ts`) — this repo is public and its routes are
+guessable, `/api/webhooks/kie` and `/api/webhooks/wavespeed` are each
+gated by their own `?secret=` check instead (neither provider can send
+Basic Auth), and `/api/lora/train`, `/api/generate`, and `/api/swap` all
+trigger real, billed jobs per call — Character Swap and video (Motion
+Control, not yet built) cost meaningfully more per call than a Flux LoRA
+still image.
 
 There is still no n8n integration and no OpenClaw integration in this repo.
 Motion Control and the Scheduler remain read-only/unwired — see the Studio

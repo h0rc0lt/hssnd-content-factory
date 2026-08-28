@@ -402,6 +402,7 @@ export interface Database {
           id: string;
           character_id: string;
           status: string;
+          provider: string;
           fal_request_id: string | null;
           base_model: string;
           trigger_word: string | null;
@@ -416,6 +417,7 @@ export interface Database {
           id?: string;
           character_id: string;
           status?: string;
+          provider?: string;
           fal_request_id?: string | null;
           base_model?: string;
           trigger_word?: string | null;
