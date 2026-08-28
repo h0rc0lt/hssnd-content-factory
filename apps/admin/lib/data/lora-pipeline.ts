@@ -211,12 +211,15 @@ export async function getInFlightLoraModels(): Promise<LoraModel[]> {
 
 export interface CreateGenerationJobInput {
   characterId: string;
-  loraModelId: string;
+  /** Null for a nano-banana-pro job — it has no trained LoRA to reference,
+   *  identity comes from reference images passed straight to fal instead. */
+  loraModelId: string | null;
   promptKey: string;
   promptText: string;
   /** Defaults to "fal-ai/flux-lora" (the Image Batch text-to-image
    *  endpoint) via the DB column default — pass "fal-ai/flux-lora/image-to-image"
-   *  for a Character Swap job. */
+   *  for a Character Swap job, or "fal-ai/nano-banana-pro/edit" for a
+   *  reference-image-based Image Batch job. */
   falEndpoint?: string;
 }
 

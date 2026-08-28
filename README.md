@@ -19,7 +19,7 @@ Phase 1.
 
 ## Status
 
-**Phase 2E — Media Library and Character Swap.** `apps/admin` is wired to
+**Phase 2F — dual-provider image generation.** `apps/admin` is wired to
 real Supabase data end to end:
 
 - Phase 2A laid down the UI shell (`DashboardShell`, Character Studio, state
@@ -50,6 +50,27 @@ real Supabase data end to end:
   by a new `fal_endpoint` column (migration
   `add_generation_jobs_fal_endpoint`) since the two features submit to
   different fal.ai queue endpoints.
+- Phase 2F gave Image Batch a second generation provider, chosen per-batch
+  in the UI, since the two have opposite tradeoffs and neither strictly
+  replaces the other: **Flux LoRA** (existing, needs a trained LoRA first,
+  ~$0.035/megapixel once trained) and **Nano Banana Pro**
+  (`fal-ai/nano-banana-pro/edit`, Google Gemini 3 Pro Image via fal — no
+  training step, works the moment a character has ≥1 reference upload,
+  identity comes from up to 3 reference images passed as `image_urls`
+  instead of trained weights, ~$0.15/image — confirmed against fal's
+  pricing page, not assumed). `generation_jobs.fal_endpoint` now takes a
+  third value; the poll-generation cron branches on it the same way it
+  already did for Character Swap.
+
+This project's own testing surfaced two real bugs worth knowing about if
+something looks stuck: (1) `/api/lora/train` originally built
+`images_data_url` as an inline base64 data URI, which fal.ai rejects past a
+certain size with a `422 URL too long` — fixed by uploading the zip via
+`fal.storage.upload()` and passing the real URL it returns instead; (2) the
+GitHub Actions poller's `schedule` trigger is best-effort, not guaranteed —
+it has gone quiet for close to two hours in practice. If a training or
+generation job looks stuck, manually re-run `.github/workflows/poll-training.yml`
+(`workflow_dispatch`) rather than assuming something is broken.
 
 Both pollers are triggered every 5 minutes by
 `.github/workflows/poll-training.yml` rather than Vercel Cron, since this
@@ -57,9 +78,9 @@ team's Vercel Hobby plan silently doesn't run cron schedules more frequent
 than once a day. Every page and API route except `/api/cron/*` sits behind
 HTTP Basic Auth (`apps/admin/middleware.ts`) — this repo is public and its
 routes are guessable, and `/api/lora/train`, `/api/generate`, and
-`/api/swap` all trigger real, billed fal.ai jobs per call — Character Swap
-and video (Motion Control, not yet built) cost meaningfully more per call
-than a still image.
+`/api/swap` all trigger real, billed fal.ai jobs per call — Character Swap,
+Nano Banana Pro, and video (Motion Control, not yet built) all cost
+meaningfully more per call than a Flux LoRA still image.
 
 There is still no n8n integration and no OpenClaw integration in this repo.
 Motion Control and the Scheduler remain read-only/unwired, and Reference

@@ -48,25 +48,25 @@ export function ImageBatchPanel({
   loraModel: LoraModel | null;
   generationJobs: GenerationJob[];
 }) {
-  if (!loraModel || loraModel.status === "failed") {
+  const loraReady = loraModel?.status === "ready";
+
+  // Nano Banana Pro needs nothing but reference images — no training wait —
+  // so it's the only thing gated on zero uploads. Once there's at least
+  // one, generation is possible even before (or without ever) training a
+  // LoRA; the LoRA card stays visible alongside it until training is done,
+  // since Flux LoRA is still the cheaper option once it's ready.
+  if (uploads.length === 0) {
     return <TrainingSetup character={character} uploads={uploads} loraModel={loraModel} />;
   }
 
-  if (loraModel.status === "queued" || loraModel.status === "training") {
-    return (
-      <DashboardCard title="Image batch generator" description="Training in progress">
-        <div className="flex items-center gap-3 rounded-lg border border-border bg-white/[0.02] px-4 py-3">
-          <StatusBadge status={loraModel.status} />
-          <p className="text-sm text-mist">
-            {character.name}&rsquo;s LoRA is training. Refresh this page to check progress —
-            the poll cron checks fal.ai every 5 minutes.
-          </p>
-        </div>
-      </DashboardCard>
-    );
-  }
-
-  return <GenerationForm character={character} generationJobs={generationJobs} />;
+  return (
+    <div className="space-y-4">
+      {!loraReady && (
+        <TrainingSetup character={character} uploads={uploads} loraModel={loraModel} />
+      )}
+      <GenerationForm character={character} loraReady={loraReady} generationJobs={generationJobs} />
+    </div>
+  );
 }
 
 /** Exported so CharacterSwapPanel can reuse it — there's still only one
@@ -141,12 +141,27 @@ export function TrainingSetup({
     }
   }
 
+  const isTraining = loraModel?.status === "queued" || loraModel?.status === "training";
+
   return (
     <DashboardCard
-      title="Train a LoRA first"
-      description={`${character.name} needs a trained LoRA before it can generate reference images`}
+      title={isTraining ? "Training in progress" : "Train a Flux LoRA"}
+      description={
+        isTraining
+          ? `${character.name}'s LoRA is training — Nano Banana Pro generation works in the meantime`
+          : `Optional — Nano Banana Pro generation works from reference images alone, but a trained LoRA is cheaper for high-volume generation`
+      }
     >
       <div className="space-y-5">
+        {isTraining && loraModel && (
+          <div className="flex items-center gap-3 rounded-lg border border-border bg-white/[0.02] px-4 py-3">
+            <StatusBadge status={loraModel.status} />
+            <p className="text-sm text-mist">
+              Refresh this page to check progress — the poll cron checks fal.ai every 5 minutes.
+            </p>
+          </div>
+        )}
+
         {loraModel?.status === "failed" && (
           <ErrorState
             title="Last training run failed"
@@ -203,17 +218,19 @@ export function TrainingSetup({
           )}
         </div>
 
-        <div className="flex items-center justify-between border-t border-border pt-4">
-          <p className="text-xs text-mist">
-            {uploadedCount === 0
-              ? "Add at least one reference image to start training."
-              : `Ready to train on ${uploadedCount} reference image${uploadedCount === 1 ? "" : "s"}.`}
-          </p>
-          <Button onClick={handleStartTraining} disabled={uploadedCount === 0 || starting}>
-            <Sparkles className="h-3.5 w-3.5" />
-            {starting ? "Starting…" : "Start training"}
-          </Button>
-        </div>
+        {!isTraining && (
+          <div className="flex items-center justify-between border-t border-border pt-4">
+            <p className="text-xs text-mist">
+              {uploadedCount === 0
+                ? "Add at least one reference image to start training."
+                : `Ready to train on ${uploadedCount} reference image${uploadedCount === 1 ? "" : "s"}.`}
+            </p>
+            <Button onClick={handleStartTraining} disabled={uploadedCount === 0 || starting}>
+              <Sparkles className="h-3.5 w-3.5" />
+              {starting ? "Starting…" : "Start training"}
+            </Button>
+          </div>
+        )}
 
         {error && <ErrorState title="Something went wrong" description={error} />}
       </div>
@@ -227,14 +244,24 @@ interface GenerateApiResult {
   error?: string;
 }
 
+type Provider = "flux-lora" | "nano-banana-pro";
+
+const PROVIDER_LABEL: Record<Provider, string> = {
+  "flux-lora": "Flux LoRA",
+  "nano-banana-pro": "Nano Banana Pro",
+};
+
 function GenerationForm({
   character,
+  loraReady,
   generationJobs,
 }: {
   character: Character;
+  loraReady: boolean;
   generationJobs: GenerationJob[];
 }) {
   const router = useRouter();
+  const [provider, setProvider] = useState<Provider>(loraReady ? "flux-lora" : "nano-banana-pro");
   const [submitting, setSubmitting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null);
@@ -251,7 +278,7 @@ function GenerationForm({
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ characterId: character.id, promptKeys }),
+        body: JSON.stringify({ characterId: character.id, promptKeys, provider }),
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "Failed to queue generation.");
@@ -260,8 +287,9 @@ function GenerationForm({
       const failedCount = results.filter((r) => r.status === "failed").length;
       const queuedCount = promptKeys.length - failedCount;
       setQueuedMessage(
-        `Queued ${queuedCount} of ${promptKeys.length} image${promptKeys.length === 1 ? "" : "s"}. ` +
-          "They'll appear in Overview → Recent media once the poll cron picks up completion (every 5 minutes)."
+        `Queued ${queuedCount} of ${promptKeys.length} image${promptKeys.length === 1 ? "" : "s"} ` +
+          `via ${PROVIDER_LABEL[provider]}. They'll appear in Overview → Recent media once the poll ` +
+          "cron picks up completion (every 5 minutes)."
       );
       router.refresh();
     } catch (err) {
@@ -277,7 +305,7 @@ function GenerationForm({
     <div className="space-y-4">
       <DashboardCard
         title="Image batch generator"
-        description={`Generate reference images from ${character.name}’s trained LoRA`}
+        description={`Generate reference images for ${character.name}`}
         headerAction={
           <Button
             size="sm"
@@ -289,6 +317,35 @@ function GenerationForm({
           </Button>
         }
       >
+        <div className="mb-4 space-y-1.5">
+          <p className="text-xs font-medium text-mist">Provider</p>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant={provider === "flux-lora" ? "default" : "secondary"}
+              disabled={!loraReady}
+              title={loraReady ? undefined : "Needs a ready trained LoRA — see the card above"}
+              onClick={() => setProvider("flux-lora")}
+            >
+              Flux LoRA · ~$0.03-0.06/image
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={provider === "nano-banana-pro" ? "default" : "secondary"}
+              onClick={() => setProvider("nano-banana-pro")}
+            >
+              Nano Banana Pro · ~$0.15/image
+            </Button>
+          </div>
+          <p className="text-xs text-mist">
+            {provider === "flux-lora"
+              ? "Uses the character's trained LoRA weights — cheapest for high-volume generation."
+              : "Uses up to 3 of the character's reference uploads directly, no training needed."}
+          </p>
+        </div>
+
         <div className="space-y-3">
           {categories.map((category) => {
             const templatesInCategory = PROMPT_TEMPLATES.filter((t) => t.category === category);
