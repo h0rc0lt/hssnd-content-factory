@@ -30,9 +30,13 @@ export async function getMediaLibrary(
   limit = 60
 ): Promise<MediaLibraryItem[]> {
   const supabase = getSupabaseServerClient();
+  // Explicit FK name required: media_assets <-> characters has two
+  // relationships (media_assets.character_id -> characters.id, and the
+  // reverse via characters.avatar_media_id -> media_assets.id), so
+  // PostgREST can't infer which one to embed on a bare "characters(...)".
   let query = supabase
     .from("media_assets")
-    .select("*, characters(name, slug)")
+    .select("*, characters!media_assets_character_id_fkey(name, slug)")
     .order("created_at", { ascending: false })
     .limit(limit);
 
