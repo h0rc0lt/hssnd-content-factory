@@ -19,7 +19,11 @@ import { describeFalError } from "@/lib/fal/describe-error";
  * `fal_request_id`, checks fal's queue status on that row's `fal_endpoint`
  * (Image Batch, Character Swap, and nano-banana-pro Image Batch jobs each
  * submit to a different fal.ai endpoint — see migration
- * add_generation_jobs_fal_endpoint and /api/generate's doc comment).
+ * add_generation_jobs_fal_endpoint and /api/generate's doc comment). The
+ * third Image Batch provider, plain "nano-banana" (direct Gemini API, not
+ * fal), never appears here — it resolves synchronously in /api/generate
+ * and never sets a `fal_request_id`, so `getInFlightGenerationJobs`'s
+ * `.not("fal_request_id", "is", null)` filter naturally excludes it.
  * `fal.queue.status` accepts a plain string endpoint id, but
  * `fal.queue.result` is generic over a literal endpoint type for
  * input/output inference, so the branch below calls it with a literal at

@@ -244,12 +244,18 @@ interface GenerateApiResult {
   error?: string;
 }
 
-type Provider = "flux-lora" | "nano-banana-pro";
+type Provider = "flux-lora" | "nano-banana-pro" | "nano-banana";
 
 const PROVIDER_LABEL: Record<Provider, string> = {
   "flux-lora": "Flux LoRA",
   "nano-banana-pro": "Nano Banana Pro",
+  "nano-banana": "Nano Banana",
 };
+
+/** nano-banana (direct Gemini API) resolves synchronously in /api/generate
+ *  — a "succeeded" result there means the image is already stored, not
+ *  queued for the poll cron like the other two providers. */
+const SYNCHRONOUS_PROVIDERS: Provider[] = ["nano-banana"];
 
 function GenerationForm({
   character,
@@ -285,11 +291,16 @@ function GenerationForm({
 
       const results = (body.results ?? []) as GenerateApiResult[];
       const failedCount = results.filter((r) => r.status === "failed").length;
-      const queuedCount = promptKeys.length - failedCount;
+      const okCount = promptKeys.length - failedCount;
+      const isSync = SYNCHRONOUS_PROVIDERS.includes(provider);
       setQueuedMessage(
-        `Queued ${queuedCount} of ${promptKeys.length} image${promptKeys.length === 1 ? "" : "s"} ` +
-          `via ${PROVIDER_LABEL[provider]}. They'll appear in Overview → Recent media once the poll ` +
-          "cron picks up completion (every 5 minutes)."
+        isSync
+          ? `Generated ${okCount} of ${promptKeys.length} image${promptKeys.length === 1 ? "" : "s"} ` +
+              `via ${PROVIDER_LABEL[provider]}. They're already stored — refresh Overview → Recent media ` +
+              "to see them."
+          : `Queued ${okCount} of ${promptKeys.length} image${promptKeys.length === 1 ? "" : "s"} ` +
+              `via ${PROVIDER_LABEL[provider]}. They'll appear in Overview → Recent media once the poll ` +
+              "cron picks up completion (every 5 minutes)."
       );
       router.refresh();
     } catch (err) {
@@ -338,11 +349,23 @@ function GenerationForm({
             >
               Nano Banana Pro · ~$0.15/image
             </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={provider === "nano-banana" ? "default" : "secondary"}
+              onClick={() => setProvider("nano-banana")}
+            >
+              Nano Banana · 500 free/day
+            </Button>
           </div>
           <p className="text-xs text-mist">
             {provider === "flux-lora"
               ? "Uses the character's trained LoRA weights — cheapest for high-volume generation."
-              : "Uses up to 3 of the character's reference uploads directly, no training needed."}
+              : provider === "nano-banana-pro"
+                ? "Uses up to 3 of the character's reference uploads directly, no training needed."
+                : "Google's Gemini API directly (not fal.ai) — same reference-upload approach as " +
+                  "Nano Banana Pro, but free for the first 500 requests/day, then billed. Resolves " +
+                  "immediately, no waiting on the poll cron."}
           </p>
         </div>
 

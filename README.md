@@ -19,7 +19,7 @@ Phase 1.
 
 ## Status
 
-**Phase 2F — dual-provider image generation.** `apps/admin` is wired to
+**Phase 2G — free-tier image generation.** `apps/admin` is wired to
 real Supabase data end to end:
 
 - Phase 2A laid down the UI shell (`DashboardShell`, Character Studio, state
@@ -61,6 +61,19 @@ real Supabase data end to end:
   pricing page, not assumed). `generation_jobs.fal_endpoint` now takes a
   third value; the poll-generation cron branches on it the same way it
   already did for Character Swap.
+- Phase 2G added a third Image Batch provider, **Nano Banana** (plain, not
+  Pro) — `gemini-2.5-flash-image` called directly against the **Google
+  Gemini API** (`@google/genai`, `GEMINI_API_KEY`), not through fal.ai.
+  Nano Banana Pro turned out to have zero free-tier quota anywhere
+  (confirmed against Google's own published rate limits), but the base
+  model genuinely gives 500 free requests/day. Same reference-image
+  identity approach as Nano Banana Pro, but architecturally different from
+  every other provider in this app: `generateContent()` is synchronous, so
+  this branch of `/api/generate` downloads the character's reference
+  uploads and base64-inlines them into the request, uploads the returned
+  image bytes straight to Supabase Storage, and resolves the
+  `generation_jobs` row to succeeded/failed in the same request — no fal
+  queue, no `fal_request_id`, never seen by the poll-generation cron.
 
 This project's own testing surfaced two real bugs worth knowing about if
 something looks stuck: (1) `/api/lora/train` originally built
@@ -78,9 +91,11 @@ team's Vercel Hobby plan silently doesn't run cron schedules more frequent
 than once a day. Every page and API route except `/api/cron/*` sits behind
 HTTP Basic Auth (`apps/admin/middleware.ts`) — this repo is public and its
 routes are guessable, and `/api/lora/train`, `/api/generate`, and
-`/api/swap` all trigger real, billed fal.ai jobs per call — Character Swap,
-Nano Banana Pro, and video (Motion Control, not yet built) all cost
-meaningfully more per call than a Flux LoRA still image.
+`/api/swap` all trigger real, billed jobs per call (fal.ai for every
+provider except Nano Banana, which calls Google's Gemini API directly) —
+Character Swap, Nano Banana Pro, and video (Motion Control, not yet built)
+all cost meaningfully more per call than a Flux LoRA still image; Nano
+Banana is free up to 500 requests/day, then billed like the others.
 
 There is still no n8n integration and no OpenClaw integration in this repo.
 Motion Control and the Scheduler remain read-only/unwired, and Reference
