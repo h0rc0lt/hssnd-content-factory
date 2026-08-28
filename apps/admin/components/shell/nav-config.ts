@@ -24,7 +24,7 @@ export interface NavConfigItem {
 export const NAV_ITEMS: NavConfigItem[] = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard, implemented: true },
   { label: "Characters", href: "/characters", icon: Users, implemented: true },
-  { label: "Media Library", icon: ImageIcon, implemented: false },
+  { label: "Media Library", href: "/media-library", icon: ImageIcon, implemented: true },
   { label: "Workflow Center", icon: Workflow, implemented: false },
   { label: "Content Calendar", icon: CalendarDays, implemented: false },
   { label: "Approval Queue", icon: CheckSquare, implemented: false },
