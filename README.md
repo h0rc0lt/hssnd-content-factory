@@ -143,6 +143,18 @@ wired to real Supabase data end to end:
   revisited later with more room to debug outside of paid live runs, but
   `/api/lora/train`, `/api/webhooks/wavespeed` (deleted), and
   `lib/wavespeed/client.ts` (deleted) are back to fal.ai only.
+- Phase 2L added character deletion (`DELETE /api/characters/[id]`, a
+  hover-revealed delete button on each Characters grid card) — a hard
+  delete, no undo, no archived state. Most character-referencing tables
+  cascade on delete (character_uploads, lora_models, generation_jobs,
+  reference_sets, scheduled_posts, captions_history — confirmed from the
+  live FK constraints); `media_assets` rows survive with `character_id`
+  set to null instead, since Media Library is a shared cross-character
+  gallery that shouldn't lose images just because the character behind
+  them got deleted. Underlying Supabase Storage files aren't cleaned up
+  (out of scope for a personal tool — negligible storage cost, and no
+  code path can surface them again once the DB rows pointing at them are
+  gone).
 
 This project's own testing surfaced two real bugs worth knowing about if
 something looks stuck: (1) `/api/lora/train` builds `images_data_url` by

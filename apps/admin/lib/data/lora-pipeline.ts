@@ -65,6 +65,40 @@ export async function createCharacter(input: CreateCharacterInput): Promise<Char
   return mapCharacterRow(data);
 }
 
+/**
+ * Permanently deletes a character and everything scoped to it. Most
+ * character-referencing tables cascade on delete (character_uploads,
+ * lora_models, generation_jobs, reference_sets, scheduled_posts,
+ * captions_history — confirmed from the live FK constraints, not
+ * assumed), so a plain `DELETE FROM characters` is enough for those.
+ * `workflow_runs` and `agent_action_log` are the two exceptions — their
+ * FKs are `ON DELETE NO ACTION`, so a populated row there would block the
+ * character delete outright; both are cleared first defensively (currently
+ * always empty in this app — Workflow Center/OpenClaw integration isn't
+ * wired up yet — so this is a no-op today, but cheap insurance against a
+ * confusing FK-violation error later). `media_assets` rows for this
+ * character survive (their FK is `ON DELETE SET NULL`) since they're
+ * shared with the cross-character Media Library — deleting a character
+ * shouldn't silently delete images already in that gallery.
+ *
+ * This does NOT delete the underlying Supabase Storage files (uploaded
+ * reference images, if any weren't already re-hosted elsewhere) — out of
+ * scope for a personal tool where storage cost is negligible; the DB rows
+ * pointing at them are gone either way, so nothing in the app can surface
+ * them again.
+ */
+export async function deleteCharacter(id: string): Promise<void> {
+  const supabase = getSupabaseServerClient();
+
+  await supabase.from("agent_action_log").delete().eq("character_id", id);
+  await supabase.from("workflow_runs").delete().eq("character_id", id);
+
+  const { error } = await supabase.from("characters").delete().eq("id", id);
+  if (error) {
+    throw new Error(`Failed to delete character: ${error.message}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // character_uploads
 // ---------------------------------------------------------------------------
