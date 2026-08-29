@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { fal } from "@fal-ai/client";
 import JSZip from "jszip";
 import {
   createLoraModel,
@@ -7,52 +8,37 @@ import {
   getCharacterById,
 } from "@/lib/data/lora-pipeline";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
-import { uploadWavespeedFile, submitWavespeedTask } from "@/lib/wavespeed/client";
-
-const WAVESPEED_TRAINER_MODEL = "wavespeed-ai/flux-dev-lora-trainer";
+import { describeFalError } from "@/lib/fal/describe-error";
 
 /**
  * POST /api/lora/train
  *
  * The explicit "Start training" action — never called automatically after
- * upload (see NewCharacterForm). Submits to **wavespeed.ai**'s
- * `flux-dev-lora-trainer`, not fal.ai (see README for the full history):
- * fal.ai's `flux-lora-fast-training` worked, but the GitHub Actions poll
- * cron's unreliable `schedule` trigger repeatedly left training runs
- * sitting "training" for 20+ minutes with no way to know completion short
- * of a manual `workflow_dispatch`. wavespeed.ai is also cheaper (~$1/run
- * vs fal's ~$2) and, more importantly, supports webhook delivery
- * (`?webhook=` query param) instead of requiring a poll — see
- * /api/webhooks/wavespeed, which resolves training the moment wavespeed
- * is done.
- *
- * This is a **training-only** provider swap. Generation
- * (`POST /api/generate`) and Character Swap (`POST /api/swap`) are
- * completely unchanged: both already only ever consume `weights_url` as
- * an opaque, portable `.safetensors` URL passed straight through to
- * fal.ai's `loras: [{ path: weightsUrl }]` input — wavespeed's trainer
- * produces the same file format on the same Flux base model, so nothing
- * downstream needed to know the weights came from a different trainer.
- *
- * wavespeed's `flux-dev-lora-trainer` takes a `data` field — a URL to a
- * *zip archive* of training images (not individual `image_urls`), plus an
- * optional `trigger_word`. Same as the former fal.ai integration, this
+ * upload (see NewCharacterForm). Submits to fal.ai's
+ * `fal-ai/flux-lora-fast-training` queue. Its real input type (confirmed
+ * directly from the installed @fal-ai/client SDK's generated types, not
+ * guessed) is `images_data_url` (required — a single archive, not
+ * individual file URLs) plus an optional `trigger_word`. trigger_word is
+ * technically optional in the schema, but functionally necessary here:
+ * fal's own docs state that without per-image caption files, the trigger
+ * word is used in their place — and this zip never includes captions. This
  * zips the character's uploaded reference images server-side and uses the
  * character's slug as the trigger word — already a unique, human-readable
  * token thanks to the DB's unique constraint on `characters.slug`, and
  * it's what `{trigger}` in prompt-templates.ts expects at generation time.
  *
- * The zip is uploaded to wavespeed's own storage
- * (`POST /media/upload/binary`, see uploadWavespeedFile) and passed as the
- * real `download_url` it returns — not an inline base64 data URI. fal.ai's
- * training route hit a real `422 Invalid URL: URL too long` doing exactly
- * that (see README); no reason to risk the same failure mode here.
+ * `images_data_url` is uploaded to fal's own storage (`fal.storage.upload`)
+ * and passed as the real URL it returns — NOT built as an inline
+ * `data:application/zip;base64,...` string. Confirmed the hard way: fal's
+ * API parses this field as an actual URL and rejects an oversized base64
+ * data URI with `422 Invalid URL: URL too long` once there are more than a
+ * couple of reference images (real production failure, diagnosed via
+ * describeFalError once that started surfacing fal's actual validation
+ * body instead of a bare "Unprocessable Entity").
  *
- * This submits and records `provider: "wavespeed"` + the task id (reusing
- * `fal_request_id` generically — see types/lora-model.ts), then stops —
- * completion is picked up by wavespeed's webhook
- * (/api/webhooks/wavespeed), not by this request and not by
- * /api/cron/poll-training (which now only polls provider="fal" rows).
+ * This submits and records the `fal_request_id`, then stops — completion
+ * is picked up by the training-poll cron (see /api/cron/poll-training),
+ * not by this request.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -61,18 +47,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "characterId is required." }, { status: 400 });
     }
 
-    if (!process.env.WAVESPEED_API_KEY) {
+    const falKey = process.env.FAL_KEY;
+    if (!falKey) {
       return NextResponse.json(
-        { error: "WAVESPEED_API_KEY is not configured on the server." },
+        { error: "FAL_KEY is not configured on the server." },
         { status: 500 }
       );
     }
-    if (!process.env.APP_BASE_URL || !process.env.WAVESPEED_WEBHOOK_SECRET) {
-      return NextResponse.json(
-        { error: "APP_BASE_URL and WAVESPEED_WEBHOOK_SECRET are not configured on the server." },
-        { status: 500 }
-      );
-    }
+    fal.config({ credentials: falKey });
 
     const character = await getCharacterById(characterId);
     if (!character) {
@@ -104,28 +86,24 @@ export async function POST(request: NextRequest) {
     const zipBlob = await zip.generateAsync({ type: "blob" });
     const triggerWord = character.slug;
 
-    const loraModel = await createLoraModel(characterId, "wavespeed");
+    const loraModel = await createLoraModel(characterId);
 
     try {
-      const zipUrl = await uploadWavespeedFile(zipBlob, `${character.slug}-training-set.zip`);
-      const webhookUrl = `${process.env.APP_BASE_URL}/api/webhooks/wavespeed?secret=${process.env.WAVESPEED_WEBHOOK_SECRET}`;
-      const { taskId } = await submitWavespeedTask({
-        model: WAVESPEED_TRAINER_MODEL,
-        input: { data: zipUrl, trigger_word: triggerWord },
-        webhookUrl,
+      const imagesDataUrl = await fal.storage.upload(zipBlob);
+      const { request_id } = await fal.queue.submit("fal-ai/flux-lora-fast-training", {
+        input: { images_data_url: imagesDataUrl, trigger_word: triggerWord },
       });
 
       const updated = await updateLoraModel(loraModel.id, {
         status: "training",
-        falRequestId: taskId,
+        falRequestId: request_id,
         triggerWord,
         trainingStartedAt: new Date().toISOString(),
       });
 
       return NextResponse.json({ loraModel: updated });
-    } catch (wavespeedErr) {
-      const message =
-        wavespeedErr instanceof Error ? wavespeedErr.message : "wavespeed.ai submission failed.";
+    } catch (falErr) {
+      const message = describeFalError(falErr, "fal.ai submission failed.");
       await updateLoraModel(loraModel.id, { status: "failed", error: message });
       return NextResponse.json({ error: message }, { status: 502 });
     }

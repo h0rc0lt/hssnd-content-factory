@@ -13,13 +13,14 @@ import { describeFalError } from "@/lib/fal/describe-error";
  *
  * For every `lora_models` row still "queued"/"training" with
  * provider="fal" and a `fal_request_id` (see getInFlightLoraModels),
- * checks fal's queue status. New training runs go through wavespeed.ai
- * instead (see /api/lora/train) and are resolved by
- * /api/webhooks/wavespeed rather than this poll — getInFlightLoraModels
- * already filters this query down to provider="fal" so a wavespeed run's
- * foreign task id (also stored in fal_request_id — see
- * types/lora-model.ts) never gets handed to fal.queue.status. On
- * COMPLETED, fetches the
+ * checks fal's queue status. Training briefly moved to wavespeed.ai
+ * (webhook-resolved, no poll needed) but was reverted back to fal.ai —
+ * wavespeed kept failing real training runs with an unresolved
+ * `403 Forbidden` after the API key had already been confirmed
+ * "Full access" and the account had credit, so it wasn't worth the
+ * uncertainty for a personal tool. `provider` stays on `lora_models` in
+ * case this gets revisited later; `getInFlightLoraModels` still filters
+ * to provider="fal" so it's a no-op today. On COMPLETED, fetches the
  * result and records `weights_url` from `diffusers_lora_file.url`. Both
  * the field name and its type (a required `url: string` on a `File`
  * object) come directly from the installed @fal-ai/client SDK's own

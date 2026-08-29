@@ -129,8 +129,7 @@ export function TrainingSetup({
           <div className="flex items-center gap-3 rounded-lg border border-border bg-white/[0.02] px-4 py-3">
             <StatusBadge status={loraModel.status} />
             <p className="text-sm text-mist">
-              Refresh this page to check progress — wavespeed.ai delivers the result by webhook
-              (usually within a few minutes).
+              Refresh this page to check progress — the poll cron checks fal.ai every 5 minutes.
             </p>
           </div>
         )}
