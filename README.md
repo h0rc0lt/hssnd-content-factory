@@ -195,13 +195,19 @@ team's Vercel Hobby plan silently doesn't run cron schedules more frequent
 than once a day; it covers Flux LoRA training, generation, and Character
 Swap (all on fal.ai) — only the two kie.ai providers are webhook-resolved
 and skip this poller. Every page and API route except `/api/cron/*` and
-`/api/webhooks/*` sits behind HTTP Basic Auth (`apps/admin/middleware.ts`)
-— this repo is public and its routes are guessable, `/api/webhooks/kie` is
-gated by its own `?secret=` check instead (kie.ai can't send Basic Auth),
-and `/api/lora/train`, `/api/generate`, and `/api/swap` all
-trigger real, billed jobs per call — Character Swap and video (Motion
-Control, not yet built) cost meaningfully more per call than a Flux LoRA
-still image.
+`/api/webhooks/*` was meant to sit behind HTTP Basic Auth
+(`apps/admin/middleware.ts`) — this repo is public and its routes are
+guessable, `/api/webhooks/kie` is gated by its own `?secret=` check
+instead (kie.ai can't send Basic Auth), and `/api/lora/train`,
+`/api/generate`, and `/api/swap` all trigger real, billed jobs per call —
+Character Swap and video (Motion Control, not yet built) cost
+meaningfully more per call than a Flux LoRA still image. **The gate is
+currently disabled** (`middleware.ts` is a pass-through) — a mistyped
+`BASIC_AUTH_PASSWORD` in Vercel locked the operator out with no way to
+recover the working value, so the whole app is temporarily open to
+anyone with the URL while the credentials get reset. Re-enable it (or
+replace it with Vercel's own Password Protection) once
+`BASIC_AUTH_USER`/`BASIC_AUTH_PASSWORD` are set to known values again.
 
 There is still no n8n integration and no OpenClaw integration in this repo.
 Motion Control and the Scheduler remain read-only/unwired — see the Studio
