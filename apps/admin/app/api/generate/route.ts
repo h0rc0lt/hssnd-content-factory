@@ -15,9 +15,19 @@ import { submitKieTask } from "@/lib/kie/client";
 /** kie.ai model ids — see lib/kie/client.ts's doc comment on how these
  *  were sourced (kie.ai's docs are blocked by this environment's network
  *  egress proxy, so cross-referenced from third-party sources instead of
- *  the primary docs, unlike every other provider in this app). */
-const KIE_NANO_BANANA_MODEL = "google/nano-banana-edit";
+ *  the primary docs, unlike every other provider in this app).
+ *  KIE_SEEDREAM_MODEL in particular is a lower-confidence guess than the
+ *  rest: docs.kie.ai confirms "seedream/4-5-text-to-image" as the 4.5
+ *  text-to-image slug and "bytedance/seedream-v4-edit" as the 4.0 edit
+ *  (reference-image) slug, but no "4.5 edit" page turned up in search —
+ *  only a kie.ai marketing page confirming a "Seedream v4.5 Edit" product
+ *  exists (10 reference images, $0.032/image). "seedream/4-5-edit" below
+ *  mirrors the confirmed 4.5 text-to-image slug's naming pattern (drop
+ *  the "bytedance/" prefix and "v" that 4.0's slugs use), which is the
+ *  best-supported guess available, not a confirmed value. If this 404s or
+ *  errors, that slug is the first thing to check. */
 const KIE_NANO_BANANA_PRO_MODEL = "nano-banana-pro";
+const KIE_SEEDREAM_MODEL = "seedream/4-5-edit";
 /** Reference images sent per kie.ai call — more than a handful doesn't
  *  meaningfully improve identity match and only slows the request down. */
 const KIE_MAX_REFERENCE_IMAGES = 3;
@@ -27,7 +37,7 @@ const KIE_MAX_REFERENCE_IMAGES = 3;
  *
  * Submits one or more reference-image generation calls for a character.
  * Body: { characterId: string, promptKeys: string[], provider?: "flux-lora"
- * | "nano-banana-pro" | "nano-banana" } — defaults to "flux-lora" for
+ * | "nano-banana-pro" | "seedream" } — defaults to "flux-lora" for
  * callers that don't pass it. Direct provider call from this Next.js
  * route, same pattern as /api/lora/train — not routed through n8n (see
  * ImageBatchPanel's doc comment for why).
@@ -42,24 +52,28 @@ const KIE_MAX_REFERENCE_IMAGES = 3;
  *   input takes `lora_models.weights_url` straight through as `path`.
  *   ~$0.035/MP once trained, but needs the $2 / 10-40min training step
  *   first.
- * - "nano-banana-pro" / "nano-banana" — both on **kie.ai**. Two earlier
- *   approaches were tried and abandoned here (see README for the full
- *   history): fal.ai's `nano-banana-pro/edit` repeatedly sat "processing"
- *   for 20+ minutes because of the GitHub Actions poll cron's unreliable
- *   schedule trigger; a genuinely-free swap to Together AI's
- *   FLUX.1-schnell-Free and Cloudflare Workers AI was tried next but is
- *   **text-to-image only** — it has no reference-image mechanism at all,
- *   so it can't produce a consistent likeness of the character and was
- *   confirmed useless for this app's actual purpose (character-consistent
- *   image generation) via live testing. kie.ai resells both Nano Banana
- *   models cheaper than fal.ai/Google's own pricing ($0.02 vs $0.039 for
- *   plain Nano Banana, ~$0.12 vs $0.15 for Pro) and, more importantly,
- *   supports webhook delivery (`callBackUrl`) instead of requiring a
- *   poll — see /api/webhooks/kie, which resolves these jobs the moment
- *   kie.ai is done rather than waiting on the same flaky poll cron.
- *   Identity comes from up to KIE_MAX_REFERENCE_IMAGES of the character's
- *   own character_uploads, passed as `image_urls` (short-lived signed
- *   read URLs — the character-media bucket isn't public).
+ * - "nano-banana-pro" / "seedream" — both on **kie.ai**. Earlier attempts
+ *   were tried and abandoned here (see README for the full history):
+ *   fal.ai's `nano-banana-pro/edit` repeatedly sat "processing" for 20+
+ *   minutes because of the GitHub Actions poll cron's unreliable schedule
+ *   trigger; a genuinely-free swap to Together AI's FLUX.1-schnell-Free
+ *   and Cloudflare Workers AI was tried next but is **text-to-image
+ *   only** — no reference-image mechanism at all, so it couldn't produce
+ *   a consistent likeness and was confirmed useless via live testing.
+ *   kie.ai resells both models cheaper than the official pricing and,
+ *   more importantly, supports webhook delivery (`callBackUrl`) instead
+ *   of requiring a poll — see /api/webhooks/kie, which resolves these
+ *   jobs the moment kie.ai is done rather than waiting on the same flaky
+ *   poll cron. The third slot was plain (non-Pro) Nano Banana at first,
+ *   swapped for ByteDance's Seedream 4.5 at the user's request — same
+ *   reference-image identity pattern, ~$0.032/image, and it's the same
+ *   model this operator's existing production n8n pipeline (for a
+ *   different persona) already uses successfully, so it's a known
+ *   quantity for quality, not just a guess. Identity for both kie.ai
+ *   providers comes from up to KIE_MAX_REFERENCE_IMAGES of the
+ *   character's own character_uploads, passed as `image_urls`
+ *   (short-lived signed read URLs — the character-media bucket isn't
+ *   public).
  *
  * `{trigger}` in the prompt template substitutes the LoRA's trigger word
  * for flux-lora, or the generic phrase "this person" for the two
@@ -69,7 +83,7 @@ const KIE_MAX_REFERENCE_IMAGES = 3;
  * All three providers submit and record a job id (`fal_request_id`, reused
  * generically — see types/generation-job.ts) + `fal_endpoint`, then stop.
  * flux-lora is picked up by the generation-poll cron (see
- * /api/cron/poll-generation); nano-banana-pro/nano-banana are picked up by
+ * /api/cron/poll-generation); nano-banana-pro/seedream are picked up by
  * kie.ai's webhook (/api/webhooks/kie) instead — see `provider` on
  * createGenerationJob, which the poll cron's query filters on so it never
  * touches a kie.ai job.
@@ -80,7 +94,7 @@ export async function POST(request: NextRequest) {
     const characterId = String(body.characterId ?? "");
     const promptKeys = Array.isArray(body.promptKeys) ? (body.promptKeys as string[]) : [];
     const provider =
-      body.provider === "nano-banana-pro" || body.provider === "nano-banana"
+      body.provider === "nano-banana-pro" || body.provider === "seedream"
         ? body.provider
         : "flux-lora";
 
@@ -191,7 +205,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const kieModel = provider === "nano-banana-pro" ? KIE_NANO_BANANA_PRO_MODEL : KIE_NANO_BANANA_MODEL;
+      const kieModel = provider === "nano-banana-pro" ? KIE_NANO_BANANA_PRO_MODEL : KIE_SEEDREAM_MODEL;
       const callBackUrl = `${process.env.APP_BASE_URL}/api/webhooks/kie?secret=${process.env.KIE_WEBHOOK_SECRET}`;
 
       submitOne = async (promptKey) => {

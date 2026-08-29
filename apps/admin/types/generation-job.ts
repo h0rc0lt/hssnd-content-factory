@@ -33,7 +33,7 @@ export interface GenerationJob {
    *  uses to find this row again. */
   falRequestId: string | null;
   /** Which endpoint/model this job was submitted to, scoped by `provider`
-   *  (e.g. "fal-ai/flux-lora" or "google/nano-banana-edit") — see migration
+   *  (e.g. "fal-ai/flux-lora" or "seedream/4-5-edit") — see migration
    *  add_generation_jobs_fal_endpoint. */
   falEndpoint: string;
   resultMediaAssetId: string | null;

@@ -19,7 +19,7 @@ Phase 1.
 
 ## Status
 
-**Phase 2K — wavespeed.ai training tried and reverted.** `apps/admin` is
+**Phase 2M — Seedream 4.5 replaces plain Nano Banana.** `apps/admin` is
 wired to real Supabase data end to end:
 
 - Phase 2A laid down the UI shell (`DashboardShell`, Character Studio, state
@@ -155,6 +155,25 @@ wired to real Supabase data end to end:
   (out of scope for a personal tool — negligible storage cost, and no
   code path can surface them again once the DB rows pointing at them are
   gone).
+- Phase 2M swapped plain (non-Pro) Nano Banana — the third Image Batch
+  provider — for **ByteDance's Seedream 4.5**, at the user's request. Same
+  role, same kie.ai/webhook plumbing, same reference-image identity
+  pattern (up to 3 uploads via `image_urls`); only the model id changed
+  (`seedream/4-5-edit`). Reasoning: Seedream is the same model this
+  operator's other, n8n-based persona pipeline already uses successfully
+  in production, so it's a known quantity for quality rather than another
+  guess — unlike most of this app's other provider picks, which were
+  chosen from research and only validated by live testing after the
+  fact. Pricing is close to a wash (~$0.032/image vs plain Nano Banana's
+  ~$0.02). One confidence note, weaker than the rest of this app's kie.ai
+  integration: `docs.kie.ai` confirms `seedream/4-5-text-to-image` as the
+  4.5 text-to-image slug and `bytedance/seedream-v4-edit` as the 4.0 edit
+  slug, but no "Seedream 4.5 Edit" docs page turned up in search (only a
+  kie.ai marketing page confirming the product exists, with up to 10
+  reference images). `seedream/4-5-edit` mirrors the confirmed 4.5
+  text-to-image slug's naming pattern — the best-supported guess
+  available, not a verified value; see `/api/generate`'s doc comment for
+  what to check first if it errors.
 
 This project's own testing surfaced two real bugs worth knowing about if
 something looks stuck: (1) `/api/lora/train` builds `images_data_url` by

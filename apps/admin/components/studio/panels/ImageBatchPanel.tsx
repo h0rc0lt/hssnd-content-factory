@@ -120,8 +120,8 @@ export function TrainingSetup({
       title={isTraining ? "Training in progress" : "Train a Flux LoRA"}
       description={
         isTraining
-          ? `${character.name}'s LoRA is training — Nano Banana/Nano Banana Pro work in the meantime`
-          : `Optional — Nano Banana/Nano Banana Pro work from reference images alone, but a trained LoRA is cheaper for high-volume generation`
+          ? `${character.name}'s LoRA is training — Seedream/Nano Banana Pro work in the meantime`
+          : `Optional — Seedream/Nano Banana Pro work from reference images alone, but a trained LoRA is cheaper for high-volume generation`
       }
     >
       <div className="space-y-5">
@@ -216,12 +216,12 @@ interface GenerateApiResult {
   error?: string;
 }
 
-type Provider = "flux-lora" | "nano-banana-pro" | "nano-banana";
+type Provider = "flux-lora" | "nano-banana-pro" | "seedream";
 
 const PROVIDER_LABEL: Record<Provider, string> = {
   "flux-lora": "Flux LoRA",
   "nano-banana-pro": "Nano Banana Pro",
-  "nano-banana": "Nano Banana",
+  "seedream": "Seedream 4.5",
 };
 
 function GenerationForm({
@@ -259,7 +259,7 @@ function GenerationForm({
       const results = (body.results ?? []) as GenerateApiResult[];
       const failedCount = results.filter((r) => r.status === "failed").length;
       const okCount = promptKeys.length - failedCount;
-      const isKie = provider === "nano-banana-pro" || provider === "nano-banana";
+      const isKie = provider === "nano-banana-pro" || provider === "seedream";
       setQueuedMessage(
         `Queued ${okCount} of ${promptKeys.length} image${promptKeys.length === 1 ? "" : "s"} ` +
           `via ${PROVIDER_LABEL[provider]}. They'll appear in Overview → Recent media once ` +
@@ -317,10 +317,10 @@ function GenerationForm({
             <Button
               type="button"
               size="sm"
-              variant={provider === "nano-banana" ? "default" : "secondary"}
-              onClick={() => setProvider("nano-banana")}
+              variant={provider === "seedream" ? "default" : "secondary"}
+              onClick={() => setProvider("seedream")}
             >
-              Nano Banana · ~$0.02/image
+              Seedream 4.5 · ~$0.032/image
             </Button>
           </div>
           <p className="text-xs text-mist">
