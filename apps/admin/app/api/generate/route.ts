@@ -16,18 +16,25 @@ import { submitKieTask } from "@/lib/kie/client";
  *  were sourced (kie.ai's docs are blocked by this environment's network
  *  egress proxy, so cross-referenced from third-party sources instead of
  *  the primary docs, unlike every other provider in this app).
- *  KIE_SEEDREAM_MODEL in particular is a lower-confidence guess than the
- *  rest: docs.kie.ai confirms "seedream/4-5-text-to-image" as the 4.5
- *  text-to-image slug and "bytedance/seedream-v4-edit" as the 4.0 edit
- *  (reference-image) slug, but no "4.5 edit" page turned up in search —
- *  only a kie.ai marketing page confirming a "Seedream v4.5 Edit" product
- *  exists (10 reference images, $0.032/image). "seedream/4-5-edit" below
- *  mirrors the confirmed 4.5 text-to-image slug's naming pattern (drop
- *  the "bytedance/" prefix and "v" that 4.0's slugs use), which is the
- *  best-supported guess available, not a confirmed value. If this 404s or
- *  errors, that slug is the first thing to check. */
+ *  KIE_SEEDREAM_MODEL in particular is still a guess, and already burned
+ *  one wrong attempt: "seedream/4-5-edit" (the original guess here) came
+ *  back from kie.ai's createTask with "The model name you specified is
+ *  not supported" on every real call — confirmed via generation_jobs.error
+ *  in production, with fal_request_id staying null on all of them, which
+ *  means kie.ai rejects it synchronously before a task/credit is ever
+ *  spent, so those failures cost nothing. "seedream/4-5-image-to-image"
+ *  below is the next, better-supported guess: kie.ai's docs confirm
+ *  "seedream/5-lite-image-to-image" verbatim (full curl example, same
+ *  `image_urls` input shape this app already sends) as the reference-image
+ *  variant of the newer Seedream 5 Lite model, so "-image-to-image" (not
+ *  "-edit") looks like the real suffix convention for this "seedream/"
+ *  naming family — "-edit" was only ever confirmed for the older,
+ *  differently-prefixed "bytedance/seedream-v4-edit". Still not directly
+ *  confirmed for 4.5 specifically. If this also 404s/errors, the confirmed
+ *  working fallback is to point this at "seedream/5-lite-image-to-image"
+ *  instead (a newer Seedream tier, same reference-image capability). */
 const KIE_NANO_BANANA_PRO_MODEL = "nano-banana-pro";
-const KIE_SEEDREAM_MODEL = "seedream/4-5-edit";
+const KIE_SEEDREAM_MODEL = "seedream/4-5-image-to-image";
 /** Reference images sent per kie.ai call — more than a handful doesn't
  *  meaningfully improve identity match and only slows the request down. */
 const KIE_MAX_REFERENCE_IMAGES = 3;

@@ -16,8 +16,10 @@
 const KIE_API_BASE = "https://api.kie.ai/api/v1";
 
 export interface KieCreateTaskInput {
-  /** e.g. "seedream/4-5-edit" (ByteDance Seedream 4.5, reference-image
-   *  editing) or "nano-banana-pro" (Nano Banana Pro). */
+  /** e.g. "seedream/4-5-image-to-image" (ByteDance Seedream 4.5,
+   *  reference-image editing — see /api/generate's doc comment for how
+   *  confident this specific slug is) or "nano-banana-pro" (Nano Banana
+   *  Pro). */
   model: string;
   prompt: string;
   imageUrls?: string[];

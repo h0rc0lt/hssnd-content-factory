@@ -158,22 +158,28 @@ wired to real Supabase data end to end:
 - Phase 2M swapped plain (non-Pro) Nano Banana — the third Image Batch
   provider — for **ByteDance's Seedream 4.5**, at the user's request. Same
   role, same kie.ai/webhook plumbing, same reference-image identity
-  pattern (up to 3 uploads via `image_urls`); only the model id changed
-  (`seedream/4-5-edit`). Reasoning: Seedream is the same model this
-  operator's other, n8n-based persona pipeline already uses successfully
-  in production, so it's a known quantity for quality rather than another
-  guess — unlike most of this app's other provider picks, which were
-  chosen from research and only validated by live testing after the
-  fact. Pricing is close to a wash (~$0.032/image vs plain Nano Banana's
-  ~$0.02). One confidence note, weaker than the rest of this app's kie.ai
-  integration: `docs.kie.ai` confirms `seedream/4-5-text-to-image` as the
-  4.5 text-to-image slug and `bytedance/seedream-v4-edit` as the 4.0 edit
-  slug, but no "Seedream 4.5 Edit" docs page turned up in search (only a
-  kie.ai marketing page confirming the product exists, with up to 10
-  reference images). `seedream/4-5-edit` mirrors the confirmed 4.5
-  text-to-image slug's naming pattern — the best-supported guess
-  available, not a verified value; see `/api/generate`'s doc comment for
-  what to check first if it errors.
+  pattern (up to 3 uploads via `image_urls`); only the model id changed.
+  Reasoning: Seedream is the same model this operator's other, n8n-based
+  persona pipeline already uses successfully in production, so it's a
+  known quantity for quality rather than another guess — unlike most of
+  this app's other provider picks, which were chosen from research and
+  only validated by live testing after the fact. Pricing is close to a
+  wash (~$0.032/image vs plain Nano Banana's ~$0.02). The model id itself
+  needed two attempts: the first guess, `seedream/4-5-edit`, came back
+  from every real call with kie.ai's "model name not supported" error
+  (confirmed via `generation_jobs.error`) — but since `fal_request_id`
+  stayed null on all of them, kie.ai rejects an unrecognized model
+  synchronously before any task/credit is spent, so those failed calls
+  cost nothing. Currently set to `seedream/4-5-image-to-image`: kie.ai's
+  docs confirm `seedream/5-lite-image-to-image` verbatim (full curl
+  example, matching this app's own `image_urls` input shape) as the
+  reference-image variant of the newer Seedream 5 Lite tier, which
+  suggests `-image-to-image` (not `-edit`) is the real suffix for this
+  `seedream/`-prefixed naming family — `-edit` was only ever confirmed for
+  the differently-prefixed, older `bytedance/seedream-v4-edit`. Still not
+  directly confirmed for 4.5 itself; see `/api/generate`'s doc comment for
+  the confirmed-working fallback (`seedream/5-lite-image-to-image`) if
+  this guess is also wrong.
 
 This project's own testing surfaced two real bugs worth knowing about if
 something looks stuck: (1) `/api/lora/train` builds `images_data_url` by
