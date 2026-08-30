@@ -19,7 +19,7 @@ Phase 1.
 
 ## Status
 
-**Phase 2O — Flux-2 Pro replaces Seedream 4.5.** `apps/admin` is
+**Phase 2P — Image Batch expands to 8 providers, cost/provider shown per image.** `apps/admin` is
 wired to real Supabase data end to end:
 
 - Phase 2A laid down the UI shell (`DashboardShell`, Character Studio, state
@@ -188,6 +188,68 @@ wired to real Supabase data end to end:
   either; Seedream 5.0 Pro was left out entirely — no confirmed model id
   or field name turned up for it, only that the product exists, so using
   it would have been a fourth blind guess for this slot.
+- Phase 2P dropped Flux-2 Pro (which, after Phase 2O shipped, did in fact
+  need two more real fields before it worked — `resolution` alongside
+  `aspect_ratio`, discovered the same way: a live call failing with
+  `"resolution is required"` after the first missing field was fixed;
+  kie.ai validates required input one field at a time rather than listing
+  every gap in a single error) and expanded Image Batch from 3 providers
+  to **8**, at the user's request: `flux-lora`, `nano-banana-pro`,
+  **Nano Banana 2**, a fourth attempt at **Seedream 4.5**, **UNI 1.1**,
+  **GPT Image 2**, **Grok Imagine**, **Qwen Image 2.0**, and
+  **Wan 2.7 Image Pro**. Every kie.ai provider now lives in one registry,
+  `lib/kie/providers.ts` (`KIE_PROVIDERS`), instead of hardcoded
+  if/else branches per provider in `/api/generate` — each entry carries
+  its model id, reference-image field name, required extra input
+  (`aspect_ratio`/`resolution`/etc.), per-image price, and a `confidence`
+  note the Image Batch provider buttons now surface as a hover tooltip,
+  since several of these are unverified guesses added explicitly to see
+  what happens rather than because they're expected to work:
+  - **Confirmed or strong**: `nano-banana-pro` (already in production),
+    Nano Banana 2 (`nano-banana-2`, `image_input` field — yet another
+    field-name variant, distinct from both `image_urls` and `input_urls`),
+    GPT Image 2 (`gpt-image-2-image-to-image`, `input_urls`, full request
+    body quoted verbatim from docs.kie.ai), Wan 2.7 Image Pro (unchanged
+    from Phase 2O's research).
+  - **Medium**: Grok Imagine (`grok-imagine/image-to-image`) — capped at
+    1 reference image, and its prompts reportedly need an `@image(1) `
+    prefix to actually use the reference image at all (a search-summary
+    detail, not seen as a literal quoted example — if identity comes out
+    wrong rather than erroring outright, this convention is the first
+    thing to check).
+  - **Low**: a 4th Seedream 4.5 guess (`seedream-4-5-edit` — flat, no
+    slash, on the theory that kie.ai's `model` field doesn't always mirror
+    its docs URL slug, which GPT Image 2's confirmed flat id already
+    proved true once); Qwen Image 2.0 (`qwen2/image-edit` is the closest
+    real, confirmed kie.ai endpoint, but nothing named exactly "Qwen Image
+    2.0" was found, and its image field is a single `image_url` string,
+    not an array, capping it at 1 reference image like Grok Imagine).
+  - **Very low**: UNI 1.1 (`uni-1-1`, fabricated) — this is a Luma Labs
+    model with no evidence it's on kie.ai's catalog at all (kie.ai's own
+    listing names Z-image, Grok Imagine, Flux-2, Google Imagen, Ideogram,
+    GPT Image, Nano Banana, Seedream, Qwen Image, Flux; Luma's own
+    announced API partners don't include kie.ai either) — expect
+    `"model name not supported"` here more likely than not.
+
+  Two other pieces landed alongside the provider expansion, both at the
+  user's request:
+  - **Per-category image count.** Each Image Batch category ("Base — grey
+    background turnaround", etc.) used to always generate exactly as many
+    images as it has distinct pose templates (4, 6, or 8, no way to
+    change it). Now each category has a 1-10 number input next to
+    Generate; asking for more than the category's own template count
+    cycles through those templates again (modulo) rather than capping
+    silently.
+  - **Provider + cost shown per image.** `generation_jobs` gained a
+    `cost_usd` column (migration `add_generation_jobs_cost_usd`), a
+    best-effort per-image USD estimate set at submission time from each
+    provider's static price (`KIE_PROVIDERS[...].priceUsd`, or
+    `FLUX_LORA_PRICE_USD` for flux-lora) — never read back from an actual
+    provider invoice, so treat it as approximate, not billing-grade.
+    `getRecentMediaForCharacter` (`lib/data/studio.ts`) now looks up each
+    displayed asset's originating `generation_jobs` row (by
+    `result_media_asset_id`) and the Overview panel's lightbox shows the
+    provider label and `~$cost` under the image.
 
 This project's own testing surfaced two real bugs worth knowing about if
 something looks stuck: (1) `/api/lora/train` builds `images_data_url` by

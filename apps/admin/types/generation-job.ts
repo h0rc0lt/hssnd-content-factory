@@ -37,6 +37,12 @@ export interface GenerationJob {
    *  migration add_generation_jobs_fal_endpoint. */
   falEndpoint: string;
   resultMediaAssetId: string | null;
+  /** Best-effort per-image USD estimate, set at submission time from a
+   *  static price table (lib/kie/providers.ts, or FLUX_LORA_PRICE_USD in
+   *  app/api/generate/route.ts for flux-lora) — not read back from any
+   *  provider invoice. Null for older jobs created before this column
+   *  existed. See migration add_generation_jobs_cost_usd. */
+  costUsd: number | null;
   error: string | null;
   createdAt: string;
   updatedAt: string;

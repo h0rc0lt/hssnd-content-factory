@@ -11,119 +11,76 @@ import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { PROMPT_TEMPLATES } from "@/lib/data/prompt-templates";
 import { describeFalError } from "@/lib/fal/describe-error";
 import { submitKieTask } from "@/lib/kie/client";
+import { KIE_PROVIDERS, type KieProviderKey } from "@/lib/kie/providers";
 
-/** kie.ai model ids — see lib/kie/client.ts's doc comment on how these
- *  were sourced (kie.ai's docs are blocked by this environment's network
- *  egress proxy, so cross-referenced from third-party sources instead of
- *  the primary docs, unlike every other provider in this app).
- *
- *  The third Image Batch slot was ByteDance's Seedream 4.5 until this
- *  point, but every guessed model id for it failed live with kie.ai's
- *  "model name not supported" (confirmed via generation_jobs.error,
- *  fal_request_id staying null each time — kie.ai rejects an unrecognized
- *  model synchronously before any task/credit is spent, so none of these
- *  cost anything): "seedream/4-5-edit", then "seedream/4-5-image-to-image",
- *  then "seedream/4.5-edit". Rather than keep guessing at Seedream 4.5
- *  specifically, swapped the slot to **Flux-2 Pro** (Black Forest Labs),
- *  at the user's request, using the one candidate with a fully confirmed
- *  request body from docs.kie.ai/market/flux2/pro-image-to-image (exact
- *  quoted JSON, not inferred): model "flux-2/pro-image-to-image", and —
- *  important — its reference images go under `input_urls`, not
- *  `image_urls` like every other provider here. Sending the wrong field
- *  name isn't rejected by kie.ai, it's silently dropped (see
- *  lib/kie/client.ts's KieCreateTaskInput.imageUrlsField), so this would
- *  have been a much sneakier failure than the four "model not supported"
- *  errors before it. ~$0.05/image at 1K resolution (5 credits × $0.01),
- *  confirmed against kie.ai's own pricing, not assumed.
- *
- *  The model id itself was right on the first try — a real, different
- *  error confirmed it ("model not supported" never came back again).
- *  What it needed next was `aspect_ratio` in the input: kie.ai's
- *  createTask rejected every real call with "aspect_ratio is required"
- *  (confirmed via generation_jobs.error) until this was added below,
- *  matching kie.ai's own docs example ("1:1"). nano-banana-pro doesn't
- *  need it, so it's only passed for flux2-pro (see `aspectRatio` below
- *  and lib/kie/client.ts's KieCreateTaskInput.aspectRatio).
- *
- *  Two other candidates were researched alongside this one, also with
- *  confirmed model ids and field names, in case Flux-2 Pro doesn't hold
- *  up under real use either:
- *   - Wan 2.7 Image Pro: model "wan/2-7-image-pro", also `input_urls`,
- *     max 3 reference images (docs.kie.ai/market/wan/2-7-image-pro).
- *   - Seedream 5.0 Pro: NOT implemented — no confirmed model id or field
- *     name turned up in search, only that the product exists. Guessing
- *     "seedream/5-pro-image-to-image" by analogy to 5 Lite would be a
- *     fifth blind guess for this slot; skipped rather than risk another
- *     silent-failure or rejected call. */
-const KIE_NANO_BANANA_PRO_MODEL = "nano-banana-pro";
-const KIE_FLUX2_PRO_MODEL = "flux-2/pro-image-to-image";
-/** Reference images sent per kie.ai call — more than a handful doesn't
- *  meaningfully improve identity match and only slows the request down. */
-const KIE_MAX_REFERENCE_IMAGES = 3;
+/** fal.ai's own price, not from the KIE_PROVIDERS registry since flux-lora
+ *  never goes through kie.ai. Rough megapixel-rate estimate, not a
+ *  provider-confirmed flat per-image figure the way most kie.ai entries
+ *  are — this app's default Image Batch output size puts a single image
+ *  in the ~$0.03-0.06 range already shown on the provider button. */
+const FLUX_LORA_PRICE_USD = 0.04;
 
 /**
  * POST /api/generate
  *
  * Submits one or more reference-image generation calls for a character.
  * Body: { characterId: string, promptKeys: string[], provider?: "flux-lora"
- * | "nano-banana-pro" | "flux2-pro" } — defaults to "flux-lora" for
- * callers that don't pass it. Direct provider call from this Next.js
- * route, same pattern as /api/lora/train — not routed through n8n (see
- * ImageBatchPanel's doc comment for why).
+ * | one of the KieProviderKey values in lib/kie/providers.ts } — defaults
+ * to "flux-lora" for callers that don't pass it. Direct provider call from
+ * this Next.js route, same pattern as /api/lora/train — not routed through
+ * n8n (see ImageBatchPanel's doc comment for why).
  *
- * Three providers, deliberately kept side by side rather than one
- * replacing another — they have opposite tradeoffs (see ImageBatchPanel's
- * doc comment and the README):
+ * "flux-lora" is `fal-ai/flux-lora` on fal.ai (confirmed from the
+ * installed SDK's generated types, FluxLoraInput/Output aliased from
+ * `unoOutput`). Requires a character's LoRA to be `ready`; its `loras`
+ * input takes `lora_models.weights_url` straight through as `path`.
+ * ~$0.035/MP once trained, but needs the $2 / 10-40min training step first.
  *
- * - "flux-lora" — `fal-ai/flux-lora` on fal.ai (confirmed from the
- *   installed SDK's generated types, FluxLoraInput/Output aliased from
- *   `unoOutput`). Requires a character's LoRA to be `ready`; its `loras`
- *   input takes `lora_models.weights_url` straight through as `path`.
- *   ~$0.035/MP once trained, but needs the $2 / 10-40min training step
- *   first.
- * - "nano-banana-pro" / "flux2-pro" — both on **kie.ai**. Earlier attempts
- *   were tried and abandoned here (see README for the full history):
- *   fal.ai's `nano-banana-pro/edit` repeatedly sat "processing" for 20+
- *   minutes because of the GitHub Actions poll cron's unreliable schedule
- *   trigger; a genuinely-free swap to Together AI's FLUX.1-schnell-Free
- *   and Cloudflare Workers AI was tried next but is **text-to-image
- *   only** — no reference-image mechanism at all, so it couldn't produce
- *   a consistent likeness and was confirmed useless via live testing.
- *   kie.ai resells both models cheaper than the official pricing and,
- *   more importantly, supports webhook delivery (`callBackUrl`) instead
- *   of requiring a poll — see /api/webhooks/kie, which resolves these
- *   jobs the moment kie.ai is done rather than waiting on the same flaky
- *   poll cron. The third slot was plain (non-Pro) Nano Banana, then
- *   ByteDance's Seedream 4.5, then (this version) **Flux-2 Pro** — see
- *   KIE_FLUX2_PRO_MODEL's doc comment above for why Seedream 4.5 was
- *   dropped. Identity for both kie.ai providers comes from up to
- *   KIE_MAX_REFERENCE_IMAGES of the character's own character_uploads
- *   (short-lived signed read URLs — the character-media bucket isn't
- *   public) — under the `image_urls` field for nano-banana-pro, but
- *   `input_urls` for flux2-pro (see submitKieTask's call below and
- *   lib/kie/client.ts's doc comment).
+ * Every other provider value is a **kie.ai** model, looked up in
+ * KIE_PROVIDERS (lib/kie/providers.ts) — that registry is the single
+ * source of truth for each model's id, reference-image field name (NOT
+ * "image_urls" for every model — see that file's doc comment for the hard
+ * lessons behind this), required extra input (aspect_ratio/resolution/
+ * etc.), per-image price, and a confidence note on how solid each of
+ * those is. This app's history with these went through Nano Banana Pro
+ * (fal.ai directly, then kie.ai after the fal.ai poll cron proved too
+ * flaky), a genuinely-free-but-text-to-image-only detour through Together
+ * AI/Cloudflare Workers AI that got reverted, plain Nano Banana, Seedream
+ * 4.5 (three failed model-id guesses, dropped), and Flux-2 Pro — see the
+ * README for the full blow-by-blow. This version adds five more
+ * candidates (Nano Banana 2, a fourth Seedream 4.5 guess, UNI 1.1, GPT
+ * Image 2, Grok Imagine, Qwen Image 2.0, Wan 2.7 Image Pro) at the user's
+ * request, explicitly accepting that the low-confidence ones (Seedream
+ * 4.5, UNI 1.1 especially) may just fail — see KIE_PROVIDERS for which.
+ *
+ * Identity for every kie.ai provider comes from up to
+ * config.maxReferenceImages of the character's own character_uploads
+ * (short-lived signed read URLs — the character-media bucket isn't
+ * public); some models cap this lower than the usual 3 (grok-imagine-image
+ * and qwen-image-2 both only accept 1).
  *
  * `{trigger}` in the prompt template substitutes the LoRA's trigger word
- * for flux-lora, or the generic phrase "this person" for the two
- * reference-image providers — there's no trained token for it to refer to;
- * the reference images alone carry the identity there.
+ * for flux-lora, or the generic phrase "this person" for every kie.ai
+ * provider — there's no trained token for it to refer to; the reference
+ * images alone carry the identity there. A provider's `promptPrefix` (see
+ * grok-imagine-image) is prepended after that substitution.
  *
- * All three providers submit and record a job id (`fal_request_id`, reused
- * generically — see types/generation-job.ts) + `fal_endpoint`, then stop.
- * flux-lora is picked up by the generation-poll cron (see
- * /api/cron/poll-generation); nano-banana-pro/flux2-pro are picked up by
- * kie.ai's webhook (/api/webhooks/kie) instead — see `provider` on
- * createGenerationJob, which the poll cron's query filters on so it never
- * touches a kie.ai job.
+ * Every provider submits and records a job id (`fal_request_id`, reused
+ * generically — see types/generation-job.ts) + `fal_endpoint` + a
+ * best-effort `cost_usd`, then stops. flux-lora is picked up by the
+ * generation-poll cron (see /api/cron/poll-generation); every kie.ai
+ * provider is picked up by kie.ai's webhook (/api/webhooks/kie) instead —
+ * see `provider` on createGenerationJob, which the poll cron's query
+ * filters on so it never touches a kie.ai job.
  */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const characterId = String(body.characterId ?? "");
     const promptKeys = Array.isArray(body.promptKeys) ? (body.promptKeys as string[]) : [];
-    const provider =
-      body.provider === "nano-banana-pro" || body.provider === "flux2-pro"
-        ? body.provider
+    const provider: "flux-lora" | KieProviderKey =
+      typeof body.provider === "string" && body.provider in KIE_PROVIDERS
+        ? (body.provider as KieProviderKey)
         : "flux-lora";
 
     if (!characterId || promptKeys.length === 0) {
@@ -193,6 +150,7 @@ export async function POST(request: NextRequest) {
           promptText,
           provider: "fal",
           falEndpoint: "fal-ai/flux-lora",
+          costUsd: FLUX_LORA_PRICE_USD,
         });
 
         try {
@@ -208,6 +166,8 @@ export async function POST(request: NextRequest) {
         }
       };
     } else {
+      const config = KIE_PROVIDERS[provider];
+
       const uploads = await getUploadsForCharacter(characterId);
       if (uploads.length === 0) {
         return NextResponse.json(
@@ -217,7 +177,7 @@ export async function POST(request: NextRequest) {
       }
 
       const supabase = getSupabaseServerClient();
-      const referenceUploads = uploads.slice(0, KIE_MAX_REFERENCE_IMAGES);
+      const referenceUploads = uploads.slice(0, config.maxReferenceImages);
       const signedUrls = await Promise.all(
         referenceUploads.map((upload) =>
           supabase.storage.from("character-media").createSignedUrl(upload.storagePath, 60 * 30)
@@ -233,18 +193,6 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const kieModel = provider === "nano-banana-pro" ? KIE_NANO_BANANA_PRO_MODEL : KIE_FLUX2_PRO_MODEL;
-      const imageUrlsField = provider === "flux2-pro" ? "input_urls" : "image_urls";
-      // flux-2/pro-image-to-image rejects a call outright without these —
-      // "aspect_ratio is required" then, on the next live call after that
-      // was fixed, "resolution is required" too (confirmed via
-      // generation_jobs.error both times; kie.ai validates required
-      // fields one at a time rather than listing every missing one in a
-      // single error). nano-banana-pro needs none of this. Values match
-      // kie.ai's own docs example for this model exactly.
-      const aspectRatio = provider === "flux2-pro" ? "1:1" : undefined;
-      const resolution = provider === "flux2-pro" ? "1K" : undefined;
-      const nsfwChecker = provider === "flux2-pro" ? false : undefined;
       const callBackUrl = `${process.env.APP_BASE_URL}/api/webhooks/kie?secret=${process.env.KIE_WEBHOOK_SECRET}`;
 
       submitOne = async (promptKey) => {
@@ -252,7 +200,8 @@ export async function POST(request: NextRequest) {
         if (!template) {
           return { promptKey, status: "failed", error: "Unknown prompt template key." };
         }
-        const promptText = template.prompt.replace("{trigger}", "this person");
+        const promptText =
+          (config.promptPrefix ?? "") + template.prompt.replace("{trigger}", "this person");
 
         const job = await createGenerationJob({
           characterId,
@@ -260,18 +209,20 @@ export async function POST(request: NextRequest) {
           promptKey,
           promptText,
           provider: "kie.ai",
-          falEndpoint: kieModel,
+          falEndpoint: config.model,
+          costUsd: config.priceUsd,
         });
 
         try {
           const { taskId } = await submitKieTask({
-            model: kieModel,
+            model: config.model,
             prompt: promptText,
             imageUrls,
-            imageUrlsField,
-            aspectRatio,
-            resolution,
-            nsfwChecker,
+            imageUrlsField: config.imageUrlsField,
+            singleImage: config.singleImage,
+            aspectRatio: config.aspectRatio,
+            resolution: config.resolution,
+            nsfwChecker: config.nsfwChecker,
             callBackUrl,
           });
           await updateGenerationJob(job.id, { status: "processing", falRequestId: taskId });

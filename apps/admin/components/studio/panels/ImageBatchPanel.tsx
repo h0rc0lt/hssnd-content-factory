@@ -18,6 +18,7 @@ import type { Character } from "@/types/character";
 import type { CharacterUpload } from "@/types/character-upload";
 import type { LoraModel } from "@/types/lora-model";
 import type { GenerationJob } from "@/types/generation-job";
+import { KIE_PROVIDERS, type KieProviderKey } from "@/lib/kie/providers";
 
 export function ImageBatchPanel({
   character,
@@ -120,8 +121,8 @@ export function TrainingSetup({
       title={isTraining ? "Training in progress" : "Train a Flux LoRA"}
       description={
         isTraining
-          ? `${character.name}'s LoRA is training — Flux-2 Pro/Nano Banana Pro work in the meantime`
-          : `Optional — Flux-2 Pro/Nano Banana Pro work from reference images alone, but a trained LoRA is cheaper for high-volume generation`
+          ? `${character.name}'s LoRA is training — the kie.ai providers below work in the meantime`
+          : `Optional — the kie.ai providers below work from reference images alone, but a trained LoRA is cheaper for high-volume generation`
       }
     >
       <div className="space-y-5">
@@ -216,18 +217,22 @@ interface GenerateApiResult {
   error?: string;
 }
 
-type Provider = "flux-lora" | "nano-banana-pro" | "flux2-pro";
+type Provider = "flux-lora" | KieProviderKey;
 
 /** Upper bound on how many images a single category "Generate" click can
  *  queue — a sanity cap on the number input below, not a technical limit
  *  from any provider. */
 const MAX_IMAGES_PER_BATCH = 10;
 
+/** flux-lora plus every registered kie.ai provider (lib/kie/providers.ts)
+ *  — rendered as buttons below in this order. Several of these are
+ *  low-confidence guesses (see each config's `confidence` note, shown as
+ *  a hover title on its button) added at the user's request to see what
+ *  actually works, not because they're all expected to. */
 const PROVIDER_LABEL: Record<Provider, string> = {
   "flux-lora": "Flux LoRA",
-  "nano-banana-pro": "Nano Banana Pro",
-  "flux2-pro": "Flux-2 Pro",
-};
+  ...Object.fromEntries(Object.values(KIE_PROVIDERS).map((p) => [p.key, p.label])),
+} as Record<Provider, string>;
 
 function GenerationForm({
   character,
@@ -289,7 +294,7 @@ function GenerationForm({
       const results = (body.results ?? []) as GenerateApiResult[];
       const failedCount = results.filter((r) => r.status === "failed").length;
       const okCount = promptKeys.length - failedCount;
-      const isKie = provider === "nano-banana-pro" || provider === "flux2-pro";
+      const isKie = provider !== "flux-lora";
       setQueuedMessage(
         `Queued ${okCount} of ${promptKeys.length} image${promptKeys.length === 1 ? "" : "s"} ` +
           `via ${PROVIDER_LABEL[provider]}. They'll appear in Overview → Recent media once ` +
@@ -336,29 +341,27 @@ function GenerationForm({
             >
               Flux LoRA · ~$0.03-0.06/image
             </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant={provider === "nano-banana-pro" ? "default" : "secondary"}
-              onClick={() => setProvider("nano-banana-pro")}
-            >
-              Nano Banana Pro · ~$0.12/image
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant={provider === "flux2-pro" ? "default" : "secondary"}
-              onClick={() => setProvider("flux2-pro")}
-            >
-              Flux-2 Pro · ~$0.05/image
-            </Button>
+            {Object.values(KIE_PROVIDERS).map((config) => (
+              <Button
+                key={config.key}
+                type="button"
+                size="sm"
+                variant={provider === config.key ? "default" : "secondary"}
+                title={config.confidence}
+                onClick={() => setProvider(config.key)}
+              >
+                {config.label} · ~${config.priceUsd}/image
+              </Button>
+            ))}
           </div>
           <p className="text-xs text-mist">
             {provider === "flux-lora"
               ? "Uses the character's trained LoRA weights — cheapest for high-volume generation."
-              : "Uses up to 3 of the character's reference uploads directly, no training needed. " +
-                "Via kie.ai (not fal.ai directly) — cheaper, and delivers results by webhook " +
-                "instead of waiting on the poll cron."}
+              : `Uses up to ${KIE_PROVIDERS[provider].maxReferenceImages} of the character's ` +
+                "reference uploads directly, no training needed. Via kie.ai (not the provider " +
+                "directly) — cheaper, and delivers results by webhook instead of waiting on the " +
+                "poll cron. Hover a provider button above for how confident its model id is — " +
+                "several of these are unverified guesses and may just fail."}
           </p>
         </div>
 

@@ -206,6 +206,7 @@ export function mapGenerationJobRow(row: GenerationJobRow): GenerationJob {
     falRequestId: row.fal_request_id,
     falEndpoint: row.fal_endpoint,
     resultMediaAssetId: row.result_media_asset_id,
+    costUsd: row.cost_usd,
     error: row.error,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

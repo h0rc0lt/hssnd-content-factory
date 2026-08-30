@@ -84,6 +84,13 @@ function Lightbox({
         {asset.label && (
           <p className="mt-2 text-center text-sm text-white/60">{asset.label}</p>
         )}
+        {asset.generatedBy && (
+          <p className="mt-1 text-center text-xs text-white/40">
+            {asset.generatedBy.providerLabel}
+            {asset.generatedBy.costUsd !== null &&
+              ` · ~$${asset.generatedBy.costUsd.toFixed(3).replace(/0+$/, "").replace(/\.$/, "")}`}
+          </p>
+        )}
         {images.length > 1 && (
           <p className="mt-1 text-center text-xs text-white/40">
             {current + 1} / {images.length}

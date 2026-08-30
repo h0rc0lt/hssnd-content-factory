@@ -9,11 +9,13 @@ import { parseKieResultUrls, type KieTaskCallbackData } from "@/lib/kie/client";
 /**
  * POST /api/webhooks/kie?secret=...
  *
- * kie.ai POSTs here when a nano-banana / nano-banana-pro task finishes —
- * /api/generate's kie.ai branch sets this route's URL (with
- * KIE_WEBHOOK_SECRET as the `secret` query param) as `callBackUrl` on
- * submit. This replaces the poll-generation cron for these two providers
- * specifically to sidestep the GitHub Actions `schedule` trigger's
+ * kie.ai POSTs here when any kie.ai provider's task finishes — every
+ * provider in lib/kie/providers.ts (plus nano-banana-pro) shares this one
+ * route, since the lookup below is keyed on kie.ai's own taskId, not
+ * anything provider-specific. /api/generate's kie.ai branch sets this
+ * route's URL (with KIE_WEBHOOK_SECRET as the `secret` query param) as
+ * `callBackUrl` on submit. This replaces the poll-generation cron for
+ * these providers to sidestep the GitHub Actions `schedule` trigger's
  * best-effort lag (documented in the README) — kie.ai pushes the result
  * the moment it's ready instead of waiting up to 5 minutes (or longer,
  * per this session's repeated real-world experience) for the next poll.

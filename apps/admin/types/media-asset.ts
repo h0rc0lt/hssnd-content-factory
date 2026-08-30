@@ -25,4 +25,16 @@ export interface MediaAsset {
   width: number | null;
   height: number | null;
   createdAt: string;
+  /** Which provider generated this image and roughly what it cost —
+   *  looked up from the generation_jobs row whose result_media_asset_id
+   *  points at this asset (see getRecentMediaForCharacter). Undefined for
+   *  an asset with no matching job (e.g. a manually uploaded reference
+   *  image) or one this query didn't bother joining for. */
+  generatedBy?: {
+    /** Human-readable label, e.g. "Flux-2 Pro" — falls back to the raw
+     *  fal_endpoint model id if it isn't in the known label map. */
+    providerLabel: string;
+    /** Best-effort USD estimate, null if the job predates cost tracking. */
+    costUsd: number | null;
+  };
 }

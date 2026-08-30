@@ -16,9 +16,10 @@
 const KIE_API_BASE = "https://api.kie.ai/api/v1";
 
 export interface KieCreateTaskInput {
-  /** e.g. "flux-2/pro-image-to-image", "wan/2-7-image-pro", or
-   *  "nano-banana-pro" — see /api/generate's doc comment for how
-   *  confident each model id is. */
+  /** e.g. "flux-2/pro-image-to-image" or "nano-banana-pro" — see
+   *  lib/kie/providers.ts for the full registry of models this app calls
+   *  and how confident each one's id/field-name/required-input guesses
+   *  are. */
   model: string;
   prompt: string;
   imageUrls?: string[];
@@ -30,7 +31,12 @@ export interface KieCreateTaskInput {
    *  silently dropped, so the call "succeeds" but generates without any
    *  reference image at all (wrong identity, not an error). Defaults to
    *  "image_urls" for backward compatibility with existing callers. */
-  imageUrlsField?: "image_urls" | "input_urls";
+  imageUrlsField?: string;
+  /** true if this model takes ONE reference image url as a plain string
+   *  under imageUrlsField, instead of an array of urls — confirmed for
+   *  qwen2/image-edit ("image_url", singular). imageUrls[0] is used and
+   *  the rest of the array is dropped when this is set. */
+  singleImage?: boolean;
   /** Required by some models and rejected outright if omitted — confirmed
    *  live for flux-2/pro-image-to-image, whose createTask call failed with
    *  "aspect_ratio is required" until this was added (kie.ai's own docs
@@ -75,7 +81,9 @@ export async function submitKieTask(input: KieCreateTaskInput): Promise<KieCreat
         prompt: input.prompt,
         ...(input.imageUrls &&
           input.imageUrls.length > 0 && {
-            [input.imageUrlsField ?? "image_urls"]: input.imageUrls,
+            [input.imageUrlsField ?? "image_urls"]: input.singleImage
+              ? input.imageUrls[0]
+              : input.imageUrls,
           }),
         ...(input.aspectRatio && { aspect_ratio: input.aspectRatio }),
         ...(input.resolution && { resolution: input.resolution }),

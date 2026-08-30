@@ -5,6 +5,7 @@ import type { WorkflowRun } from "@/types/workflow";
 import type { ScheduledPost } from "@/types/scheduled-post";
 
 import { getSupabaseServerClient } from "@/lib/supabase/server";
+import { getProviderLabel } from "@/lib/kie/providers";
 import {
   mapReferenceSetRow,
   mapMotionTemplateRow,
@@ -147,7 +148,40 @@ export async function getRecentMediaForCharacter(characterId: string, limit = 6)
   if (error) {
     throw new Error(`Failed to load recent media: ${error.message}`);
   }
-  return (data ?? []).map(mapMediaAssetRow);
+  const assets = (data ?? []).map(mapMediaAssetRow);
+
+  // Which provider/cost produced each of these, for the Overview lightbox
+  // (see MediaAsset.generatedBy) — a separate query rather than an
+  // embedded join, since generation_jobs.result_media_asset_id is a
+  // reverse FK (zero or one job per asset) and this keeps that lookup
+  // explicit instead of relying on Supabase's embed-relation inference.
+  const assetIds = assets.map((a) => a.id);
+  if (assetIds.length === 0) return assets;
+
+  const { data: jobs, error: jobsError } = await supabase
+    .from("generation_jobs")
+    .select("result_media_asset_id, fal_endpoint, cost_usd")
+    .in("result_media_asset_id", assetIds);
+
+  if (jobsError || !jobs) return assets;
+
+  const byAssetId = new Map(
+    jobs
+      .filter((j) => j.result_media_asset_id)
+      .map((j) => [j.result_media_asset_id as string, j])
+  );
+
+  return assets.map((asset) => {
+    const job = byAssetId.get(asset.id);
+    if (!job) return asset;
+    return {
+      ...asset,
+      generatedBy: {
+        providerLabel: getProviderLabel(job.fal_endpoint),
+        costUsd: job.cost_usd,
+      },
+    };
+  });
 }
 
 export async function getRecentWorkflowRunsForCharacter(characterId: string, limit = 6): Promise<WorkflowRun[]> {

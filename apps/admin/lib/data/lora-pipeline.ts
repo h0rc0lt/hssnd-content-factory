@@ -273,6 +273,12 @@ export interface CreateGenerationJobInput {
    *  resolved by the kie.ai webhook instead of the fal poll cron — see
    *  types/generation-job.ts and migration add_generation_jobs_provider. */
   provider?: GenerationJob["provider"];
+  /** Best-effort per-image USD estimate, from lib/kie/providers.ts (or
+   *  FLUX_LORA_PRICE_USD in app/api/generate/route.ts for flux-lora) —
+   *  not read back from any provider invoice. Surfaced in the Overview
+   *  lightbox so the operator can see roughly what a generation cost.
+   *  See migration add_generation_jobs_cost_usd. */
+  costUsd?: number;
 }
 
 export async function createGenerationJob(
@@ -288,6 +294,7 @@ export async function createGenerationJob(
       prompt_text: input.promptText,
       ...(input.falEndpoint !== undefined && { fal_endpoint: input.falEndpoint }),
       ...(input.provider !== undefined && { provider: input.provider }),
+      ...(input.costUsd !== undefined && { cost_usd: input.costUsd }),
     })
     .select("*")
     .single();
