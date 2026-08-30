@@ -16,34 +16,38 @@ import { submitKieTask } from "@/lib/kie/client";
  *  were sourced (kie.ai's docs are blocked by this environment's network
  *  egress proxy, so cross-referenced from third-party sources instead of
  *  the primary docs, unlike every other provider in this app).
- *  KIE_SEEDREAM_MODEL has burned two wrong attempts so far, both with
- *  kie.ai's createTask returning "The model name you specified is not
- *  supported" (confirmed via generation_jobs.error) and fal_request_id
- *  staying null — kie.ai rejects an unrecognized model synchronously
- *  before any task/credit is spent, so none of these failures cost
- *  anything:
- *   1. "seedream/4-5-edit" — the original guess, mirroring the confirmed
- *      "seedream/4-5-text-to-image" text-to-image slug's naming pattern.
- *   2. "seedream/4-5-image-to-image" — guessed after kie.ai's docs
- *      confirmed "seedream/5-lite-image-to-image" verbatim as the
- *      reference-image variant of the newer Seedream 5 Lite tier, which
- *      looked like it generalized. It doesn't: kie.ai's docs sidebar only
- *      lists "Seedream4.5 - Text to Image" and "Seedream4.5 - Edit" as
- *      real 4.5 endpoints — "image-to-image" isn't a 4.5 variant at all,
- *      only 5.0 Lite/Pro have it.
- *  Current value, "seedream/4.5-edit", is a third guess: the confirmed
- *  existence of a docs.kie.ai/market/seedream/4-5-edit page means "edit"
- *  (attempt 1's task-type suffix) was likely right after all, so this
- *  swaps only the separator — hyphen ("4-5") to dot ("4.5") — on the
- *  theory that the *page URL* slug and the *API request's `model` field*
- *  don't necessarily match character-for-character. Still not confirmed
- *  from the primary source (docs.kie.ai is blocked by this environment's
- *  network egress proxy, every attempt to fetch it directly has failed).
- *  If this also errors, stop guessing and switch to the one confirmed-
- *  working reference-image Seedream slug found so far,
- *  "seedream/5-lite-image-to-image" (a newer tier, same capability). */
+ *
+ *  The third Image Batch slot was ByteDance's Seedream 4.5 until this
+ *  point, but every guessed model id for it failed live with kie.ai's
+ *  "model name not supported" (confirmed via generation_jobs.error,
+ *  fal_request_id staying null each time — kie.ai rejects an unrecognized
+ *  model synchronously before any task/credit is spent, so none of these
+ *  cost anything): "seedream/4-5-edit", then "seedream/4-5-image-to-image",
+ *  then "seedream/4.5-edit". Rather than keep guessing at Seedream 4.5
+ *  specifically, swapped the slot to **Flux-2 Pro** (Black Forest Labs),
+ *  at the user's request, using the one candidate with a fully confirmed
+ *  request body from docs.kie.ai/market/flux2/pro-image-to-image (exact
+ *  quoted JSON, not inferred): model "flux-2/pro-image-to-image", and —
+ *  important — its reference images go under `input_urls`, not
+ *  `image_urls` like every other provider here. Sending the wrong field
+ *  name isn't rejected by kie.ai, it's silently dropped (see
+ *  lib/kie/client.ts's KieCreateTaskInput.imageUrlsField), so this would
+ *  have been a much sneakier failure than the four "model not supported"
+ *  errors before it. ~$0.05/image at 1K resolution (5 credits × $0.01),
+ *  confirmed against kie.ai's own pricing, not assumed.
+ *
+ *  Two other candidates were researched alongside this one, also with
+ *  confirmed model ids and field names, in case Flux-2 Pro doesn't hold
+ *  up under real use either:
+ *   - Wan 2.7 Image Pro: model "wan/2-7-image-pro", also `input_urls`,
+ *     max 3 reference images (docs.kie.ai/market/wan/2-7-image-pro).
+ *   - Seedream 5.0 Pro: NOT implemented — no confirmed model id or field
+ *     name turned up in search, only that the product exists. Guessing
+ *     "seedream/5-pro-image-to-image" by analogy to 5 Lite would be a
+ *     fifth blind guess for this slot; skipped rather than risk another
+ *     silent-failure or rejected call. */
 const KIE_NANO_BANANA_PRO_MODEL = "nano-banana-pro";
-const KIE_SEEDREAM_MODEL = "seedream/4.5-edit";
+const KIE_FLUX2_PRO_MODEL = "flux-2/pro-image-to-image";
 /** Reference images sent per kie.ai call — more than a handful doesn't
  *  meaningfully improve identity match and only slows the request down. */
 const KIE_MAX_REFERENCE_IMAGES = 3;
@@ -53,7 +57,7 @@ const KIE_MAX_REFERENCE_IMAGES = 3;
  *
  * Submits one or more reference-image generation calls for a character.
  * Body: { characterId: string, promptKeys: string[], provider?: "flux-lora"
- * | "nano-banana-pro" | "seedream" } — defaults to "flux-lora" for
+ * | "nano-banana-pro" | "flux2-pro" } — defaults to "flux-lora" for
  * callers that don't pass it. Direct provider call from this Next.js
  * route, same pattern as /api/lora/train — not routed through n8n (see
  * ImageBatchPanel's doc comment for why).
@@ -68,7 +72,7 @@ const KIE_MAX_REFERENCE_IMAGES = 3;
  *   input takes `lora_models.weights_url` straight through as `path`.
  *   ~$0.035/MP once trained, but needs the $2 / 10-40min training step
  *   first.
- * - "nano-banana-pro" / "seedream" — both on **kie.ai**. Earlier attempts
+ * - "nano-banana-pro" / "flux2-pro" — both on **kie.ai**. Earlier attempts
  *   were tried and abandoned here (see README for the full history):
  *   fal.ai's `nano-banana-pro/edit` repeatedly sat "processing" for 20+
  *   minutes because of the GitHub Actions poll cron's unreliable schedule
@@ -80,16 +84,15 @@ const KIE_MAX_REFERENCE_IMAGES = 3;
  *   more importantly, supports webhook delivery (`callBackUrl`) instead
  *   of requiring a poll — see /api/webhooks/kie, which resolves these
  *   jobs the moment kie.ai is done rather than waiting on the same flaky
- *   poll cron. The third slot was plain (non-Pro) Nano Banana at first,
- *   swapped for ByteDance's Seedream 4.5 at the user's request — same
- *   reference-image identity pattern, ~$0.032/image, and it's the same
- *   model this operator's existing production n8n pipeline (for a
- *   different persona) already uses successfully, so it's a known
- *   quantity for quality, not just a guess. Identity for both kie.ai
- *   providers comes from up to KIE_MAX_REFERENCE_IMAGES of the
- *   character's own character_uploads, passed as `image_urls`
+ *   poll cron. The third slot was plain (non-Pro) Nano Banana, then
+ *   ByteDance's Seedream 4.5, then (this version) **Flux-2 Pro** — see
+ *   KIE_FLUX2_PRO_MODEL's doc comment above for why Seedream 4.5 was
+ *   dropped. Identity for both kie.ai providers comes from up to
+ *   KIE_MAX_REFERENCE_IMAGES of the character's own character_uploads
  *   (short-lived signed read URLs — the character-media bucket isn't
- *   public).
+ *   public) — under the `image_urls` field for nano-banana-pro, but
+ *   `input_urls` for flux2-pro (see submitKieTask's call below and
+ *   lib/kie/client.ts's doc comment).
  *
  * `{trigger}` in the prompt template substitutes the LoRA's trigger word
  * for flux-lora, or the generic phrase "this person" for the two
@@ -99,7 +102,7 @@ const KIE_MAX_REFERENCE_IMAGES = 3;
  * All three providers submit and record a job id (`fal_request_id`, reused
  * generically — see types/generation-job.ts) + `fal_endpoint`, then stop.
  * flux-lora is picked up by the generation-poll cron (see
- * /api/cron/poll-generation); nano-banana-pro/seedream are picked up by
+ * /api/cron/poll-generation); nano-banana-pro/flux2-pro are picked up by
  * kie.ai's webhook (/api/webhooks/kie) instead — see `provider` on
  * createGenerationJob, which the poll cron's query filters on so it never
  * touches a kie.ai job.
@@ -110,7 +113,7 @@ export async function POST(request: NextRequest) {
     const characterId = String(body.characterId ?? "");
     const promptKeys = Array.isArray(body.promptKeys) ? (body.promptKeys as string[]) : [];
     const provider =
-      body.provider === "nano-banana-pro" || body.provider === "seedream"
+      body.provider === "nano-banana-pro" || body.provider === "flux2-pro"
         ? body.provider
         : "flux-lora";
 
@@ -221,7 +224,8 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const kieModel = provider === "nano-banana-pro" ? KIE_NANO_BANANA_PRO_MODEL : KIE_SEEDREAM_MODEL;
+      const kieModel = provider === "nano-banana-pro" ? KIE_NANO_BANANA_PRO_MODEL : KIE_FLUX2_PRO_MODEL;
+      const imageUrlsField = provider === "flux2-pro" ? "input_urls" : "image_urls";
       const callBackUrl = `${process.env.APP_BASE_URL}/api/webhooks/kie?secret=${process.env.KIE_WEBHOOK_SECRET}`;
 
       submitOne = async (promptKey) => {
@@ -245,6 +249,7 @@ export async function POST(request: NextRequest) {
             model: kieModel,
             prompt: promptText,
             imageUrls,
+            imageUrlsField,
             callBackUrl,
           });
           await updateGenerationJob(job.id, { status: "processing", falRequestId: taskId });

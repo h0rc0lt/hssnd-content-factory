@@ -16,13 +16,21 @@
 const KIE_API_BASE = "https://api.kie.ai/api/v1";
 
 export interface KieCreateTaskInput {
-  /** e.g. "seedream/4.5-edit" (ByteDance Seedream 4.5, reference-image
-   *  editing — see /api/generate's doc comment for how confident this
-   *  specific slug is, it's on its third guess) or "nano-banana-pro"
-   *  (Nano Banana Pro). */
+  /** e.g. "flux-2/pro-image-to-image", "wan/2-7-image-pro", or
+   *  "nano-banana-pro" — see /api/generate's doc comment for how
+   *  confident each model id is. */
   model: string;
   prompt: string;
   imageUrls?: string[];
+  /** The JSON field name kie.ai expects the reference image URLs under —
+   *  NOT the same across every model. Confirmed from real docs.kie.ai
+   *  request-body examples: nano-banana-pro and the "seedream/"-prefixed
+   *  models use "image_urls"; flux-2/* and wan/* use "input_urls"
+   *  instead. Sending the wrong key isn't rejected by kie.ai — it's
+   *  silently dropped, so the call "succeeds" but generates without any
+   *  reference image at all (wrong identity, not an error). Defaults to
+   *  "image_urls" for backward compatibility with existing callers. */
+  imageUrlsField?: "image_urls" | "input_urls";
   callBackUrl: string;
 }
 
@@ -47,7 +55,10 @@ export async function submitKieTask(input: KieCreateTaskInput): Promise<KieCreat
       callBackUrl: input.callBackUrl,
       input: {
         prompt: input.prompt,
-        ...(input.imageUrls && input.imageUrls.length > 0 && { image_urls: input.imageUrls }),
+        ...(input.imageUrls &&
+          input.imageUrls.length > 0 && {
+            [input.imageUrlsField ?? "image_urls"]: input.imageUrls,
+          }),
       },
     }),
   });

@@ -19,7 +19,7 @@ Phase 1.
 
 ## Status
 
-**Phase 2M — Seedream 4.5 replaces plain Nano Banana.** `apps/admin` is
+**Phase 2O — Flux-2 Pro replaces Seedream 4.5.** `apps/admin` is
 wired to real Supabase data end to end:
 
 - Phase 2A laid down the UI shell (`DashboardShell`, Character Studio, state
@@ -156,36 +156,38 @@ wired to real Supabase data end to end:
   code path can surface them again once the DB rows pointing at them are
   gone).
 - Phase 2M swapped plain (non-Pro) Nano Banana — the third Image Batch
-  provider — for **ByteDance's Seedream 4.5**, at the user's request. Same
-  role, same kie.ai/webhook plumbing, same reference-image identity
-  pattern (up to 3 uploads via `image_urls`); only the model id changed.
-  Reasoning: Seedream is the same model this operator's other, n8n-based
-  persona pipeline already uses successfully in production, so it's a
-  known quantity for quality rather than another guess — unlike most of
-  this app's other provider picks, which were chosen from research and
-  only validated by live testing after the fact. Pricing is close to a
-  wash (~$0.032/image vs plain Nano Banana's ~$0.02). The model id itself
-  has burned two wrong guesses so far, both confirmed via
-  `generation_jobs.error` as kie.ai's "model name not supported", both
-  free (`fal_request_id` stayed null — kie.ai rejects an unrecognized
-  model synchronously before any task/credit is spent): `seedream/4-5-edit`
-  (mirrored the confirmed text-to-image slug's naming), then
-  `seedream/4-5-image-to-image` (kie.ai's docs confirm
-  `seedream/5-lite-image-to-image` verbatim as the newer Seedream 5 Lite
-  tier's reference-image variant, which looked like it'd generalize — it
-  doesn't, kie.ai's docs sidebar only lists "Seedream4.5 - Text to Image"
-  and "Seedream4.5 - Edit" as real 4.5 endpoints, no image-to-image
-  variant for 4.5 at all). Currently set to `seedream/4.5-edit` — a third
-  guess: the confirmed existence of a `docs.kie.ai/market/seedream/4-5-edit`
-  page suggests "edit" (the first guess's task-type suffix) was right all
-  along, so this swaps only the separator, hyphen (`4-5`) to dot (`4.5`),
-  on the theory that the page's URL slug and the API's `model` field don't
-  necessarily match character-for-character. Still not confirmed from the
-  primary source — `docs.kie.ai` is blocked by this environment's network
-  egress proxy, every direct fetch attempt has failed. See
-  `/api/generate`'s doc comment for the confirmed-working fallback
-  (`seedream/5-lite-image-to-image`, a newer tier) if this guess is also
-  wrong.
+  provider — for **ByteDance's Seedream 4.5**, at the user's request, on
+  the strength of it being the same model this operator's other, n8n-based
+  persona pipeline already uses successfully in production. It never
+  worked: three separate model-id guesses (`seedream/4-5-edit`,
+  `seedream/4-5-image-to-image`, `seedream/4.5-edit`) all failed live with
+  kie.ai's "model name not supported" — each confirmed free via
+  `generation_jobs.error`/`fal_request_id` staying null, kie.ai rejects an
+  unrecognized model synchronously before any task/credit is spent, but
+  three rounds of guess-deploy-test with no working result was still the
+  wrong way to chase this. `docs.kie.ai` stayed blocked by this
+  environment's network egress proxy through every attempt, so none of the
+  three guesses could ever be checked against the primary source before
+  shipping.
+- Phase 2O replaced Seedream 4.5 with **Flux-2 Pro** (Black Forest Labs)
+  in that same slot, at the user's request, after Seedream 4.5 kept
+  failing. Chosen over two other candidates researched alongside it
+  (Seedream 5.0 Pro and Wan 2.7 Image Pro) because it's the only one with
+  a fully confirmed request body quoted from
+  `docs.kie.ai/market/flux2/pro-image-to-image` — model
+  `flux-2/pro-image-to-image`, ~$0.05/image at 1K (5 credits × $0.01,
+  confirmed against kie.ai's pricing). One real gotcha this surfaced:
+  Flux-2 Pro's reference images go under `input_urls`, not `image_urls`
+  like every other provider here — sending the wrong field name isn't
+  rejected by kie.ai, it's silently dropped, so the call "succeeds" but
+  generates with no reference image at all (wrong identity, not an
+  error). `submitKieTask` (`lib/kie/client.ts`) now takes an
+  `imageUrlsField` param per model instead of hardcoding `image_urls`.
+  Wan 2.7 Image Pro (`wan/2-7-image-pro`, also confirmed, also
+  `input_urls`) is the next candidate to try if Flux-2 Pro doesn't hold up
+  either; Seedream 5.0 Pro was left out entirely — no confirmed model id
+  or field name turned up for it, only that the product exists, so using
+  it would have been a fourth blind guess for this slot.
 
 This project's own testing surfaced two real bugs worth knowing about if
 something looks stuck: (1) `/api/lora/train` builds `images_data_url` by

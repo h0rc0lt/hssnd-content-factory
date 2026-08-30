@@ -120,8 +120,8 @@ export function TrainingSetup({
       title={isTraining ? "Training in progress" : "Train a Flux LoRA"}
       description={
         isTraining
-          ? `${character.name}'s LoRA is training — Seedream/Nano Banana Pro work in the meantime`
-          : `Optional — Seedream/Nano Banana Pro work from reference images alone, but a trained LoRA is cheaper for high-volume generation`
+          ? `${character.name}'s LoRA is training — Flux-2 Pro/Nano Banana Pro work in the meantime`
+          : `Optional — Flux-2 Pro/Nano Banana Pro work from reference images alone, but a trained LoRA is cheaper for high-volume generation`
       }
     >
       <div className="space-y-5">
@@ -216,12 +216,12 @@ interface GenerateApiResult {
   error?: string;
 }
 
-type Provider = "flux-lora" | "nano-banana-pro" | "seedream";
+type Provider = "flux-lora" | "nano-banana-pro" | "flux2-pro";
 
 const PROVIDER_LABEL: Record<Provider, string> = {
   "flux-lora": "Flux LoRA",
   "nano-banana-pro": "Nano Banana Pro",
-  "seedream": "Seedream 4.5",
+  "flux2-pro": "Flux-2 Pro",
 };
 
 function GenerationForm({
@@ -259,7 +259,7 @@ function GenerationForm({
       const results = (body.results ?? []) as GenerateApiResult[];
       const failedCount = results.filter((r) => r.status === "failed").length;
       const okCount = promptKeys.length - failedCount;
-      const isKie = provider === "nano-banana-pro" || provider === "seedream";
+      const isKie = provider === "nano-banana-pro" || provider === "flux2-pro";
       setQueuedMessage(
         `Queued ${okCount} of ${promptKeys.length} image${promptKeys.length === 1 ? "" : "s"} ` +
           `via ${PROVIDER_LABEL[provider]}. They'll appear in Overview → Recent media once ` +
@@ -317,10 +317,10 @@ function GenerationForm({
             <Button
               type="button"
               size="sm"
-              variant={provider === "seedream" ? "default" : "secondary"}
-              onClick={() => setProvider("seedream")}
+              variant={provider === "flux2-pro" ? "default" : "secondary"}
+              onClick={() => setProvider("flux2-pro")}
             >
-              Seedream 4.5 · ~$0.032/image
+              Flux-2 Pro · ~$0.05/image
             </Button>
           </div>
           <p className="text-xs text-mist">

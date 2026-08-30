@@ -267,7 +267,7 @@ export interface CreateGenerationJobInput {
   /** Defaults to "fal-ai/flux-lora" (the Image Batch text-to-image
    *  endpoint) via the DB column default — pass "fal-ai/flux-lora/image-to-image"
    *  for a Character Swap job, or a kie.ai model id (e.g.
-   *  "seedream/4-5-edit") for a kie.ai job. */
+   *  "flux-2/pro-image-to-image") for a kie.ai job. */
   falEndpoint?: string;
   /** Defaults to "fal" via the DB column default. Pass "kie.ai" for a job
    *  resolved by the kie.ai webhook instead of the fal poll cron — see
