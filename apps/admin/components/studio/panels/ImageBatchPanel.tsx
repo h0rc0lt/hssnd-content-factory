@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Sparkles, UploadCloud, X, Layers } from "lucide-react";
 import { DashboardCard } from "@/components/shell/DashboardCard";
@@ -251,6 +251,23 @@ function GenerationForm({
    *  being pre-seeded, so this only needs updating when the user actually
    *  changes a value. */
   const [counts, setCounts] = useState<Record<string, number>>({});
+
+  // generationJobs is a server-fetched prop, snapshotted at render time —
+  // a job's status only ever changes here via router.refresh() re-running
+  // the server render, never on its own. Without this, "Processing" jobs
+  // sit stuck on screen until the user manually reloads the page, even
+  // once kie.ai's webhook (or the poll cron, for flux-lora) has long since
+  // resolved them. Poll every 5s while any job here is still in flight;
+  // stops itself once none are (this effect re-runs whenever
+  // generationJobs changes, i.e. after every successful refresh).
+  useEffect(() => {
+    const hasInFlightJob = generationJobs.some(
+      (job) => job.status === "queued" || job.status === "processing"
+    );
+    if (!hasInFlightJob) return;
+    const interval = setInterval(() => router.refresh(), 5000);
+    return () => clearInterval(interval);
+  }, [generationJobs, router]);
 
   const categories = Array.from(
     new Set(PROMPT_TEMPLATES.map((t) => t.category))
