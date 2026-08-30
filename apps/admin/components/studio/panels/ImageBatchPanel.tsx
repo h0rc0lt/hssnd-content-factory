@@ -218,6 +218,11 @@ interface GenerateApiResult {
 
 type Provider = "flux-lora" | "nano-banana-pro" | "flux2-pro";
 
+/** Upper bound on how many images a single category "Generate" click can
+ *  queue — a sanity cap on the number input below, not a technical limit
+ *  from any provider. */
+const MAX_IMAGES_PER_BATCH = 10;
+
 const PROVIDER_LABEL: Record<Provider, string> = {
   "flux-lora": "Flux LoRA",
   "nano-banana-pro": "Nano Banana Pro",
@@ -238,6 +243,14 @@ function GenerationForm({
   const [submitting, setSubmitting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null);
+  /** How many images to generate per category, keyed by category — defaults
+   *  to that category's own template count (its prior fixed behavior) but
+   *  the user can override it to anything from 1 to MAX_IMAGES_PER_BATCH.
+   *  Missing entries fall back to the category's template count at render
+   *  time (see the `count ?? templatesInCategory.length` below) rather than
+   *  being pre-seeded, so this only needs updating when the user actually
+   *  changes a value. */
+  const [counts, setCounts] = useState<Record<string, number>>({});
 
   const categories = Array.from(
     new Set(PROMPT_TEMPLATES.map((t) => t.category))
@@ -335,6 +348,7 @@ function GenerationForm({
         <div className="space-y-3">
           {categories.map((category) => {
             const templatesInCategory = PROMPT_TEMPLATES.filter((t) => t.category === category);
+            const count = counts[category] ?? templatesInCategory.length;
             return (
               <div
                 key={category}
@@ -342,16 +356,42 @@ function GenerationForm({
               >
                 <div>
                   <p className="text-sm text-paper">{PROMPT_TEMPLATE_CATEGORY_LABEL[category]}</p>
-                  <p className="text-xs text-mist">{templatesInCategory.length} images</p>
+                  <p className="text-xs text-mist">
+                    {templatesInCategory.length} unique pose{templatesInCategory.length === 1 ? "" : "s"}
+                    {count > templatesInCategory.length ? " — poses repeat past that" : ""}
+                  </p>
                 </div>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => submitBatch(templatesInCategory.map((t) => t.key), category)}
-                  disabled={submitting !== null}
-                >
-                  {submitting === category ? "Queuing…" : "Generate"}
-                </Button>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={1}
+                    max={MAX_IMAGES_PER_BATCH}
+                    value={count}
+                    onChange={(e) => {
+                      const next = Math.min(
+                        MAX_IMAGES_PER_BATCH,
+                        Math.max(1, Number(e.target.value) || 1)
+                      );
+                      setCounts((prev) => ({ ...prev, [category]: next }));
+                    }}
+                    className="h-8 w-14 rounded-md border border-border bg-white/[0.02] px-2 text-center text-sm text-paper"
+                    aria-label={`Number of images for ${PROMPT_TEMPLATE_CATEGORY_LABEL[category]}`}
+                  />
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => {
+                      const promptKeys = Array.from(
+                        { length: count },
+                        (_, i) => templatesInCategory[i % templatesInCategory.length].key
+                      );
+                      submitBatch(promptKeys, category);
+                    }}
+                    disabled={submitting !== null}
+                  >
+                    {submitting === category ? "Queuing…" : "Generate"}
+                  </Button>
+                </div>
               </div>
             );
           })}

@@ -31,6 +31,12 @@ export interface KieCreateTaskInput {
    *  reference image at all (wrong identity, not an error). Defaults to
    *  "image_urls" for backward compatibility with existing callers. */
   imageUrlsField?: "image_urls" | "input_urls";
+  /** Required by some models and rejected outright if omitted — confirmed
+   *  live for flux-2/pro-image-to-image, whose createTask call failed with
+   *  "aspect_ratio is required" until this was added (kie.ai's own docs
+   *  example uses "1:1"). nano-banana-pro and the "seedream/"-prefixed
+   *  models didn't need it. Omit for models that don't require it. */
+  aspectRatio?: string;
   callBackUrl: string;
 }
 
@@ -59,6 +65,7 @@ export async function submitKieTask(input: KieCreateTaskInput): Promise<KieCreat
           input.imageUrls.length > 0 && {
             [input.imageUrlsField ?? "image_urls"]: input.imageUrls,
           }),
+        ...(input.aspectRatio && { aspect_ratio: input.aspectRatio }),
       },
     }),
   });

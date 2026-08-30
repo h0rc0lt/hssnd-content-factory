@@ -36,6 +36,15 @@ import { submitKieTask } from "@/lib/kie/client";
  *  errors before it. ~$0.05/image at 1K resolution (5 credits × $0.01),
  *  confirmed against kie.ai's own pricing, not assumed.
  *
+ *  The model id itself was right on the first try — a real, different
+ *  error confirmed it ("model not supported" never came back again).
+ *  What it needed next was `aspect_ratio` in the input: kie.ai's
+ *  createTask rejected every real call with "aspect_ratio is required"
+ *  (confirmed via generation_jobs.error) until this was added below,
+ *  matching kie.ai's own docs example ("1:1"). nano-banana-pro doesn't
+ *  need it, so it's only passed for flux2-pro (see `aspectRatio` below
+ *  and lib/kie/client.ts's KieCreateTaskInput.aspectRatio).
+ *
  *  Two other candidates were researched alongside this one, also with
  *  confirmed model ids and field names, in case Flux-2 Pro doesn't hold
  *  up under real use either:
@@ -226,6 +235,10 @@ export async function POST(request: NextRequest) {
 
       const kieModel = provider === "nano-banana-pro" ? KIE_NANO_BANANA_PRO_MODEL : KIE_FLUX2_PRO_MODEL;
       const imageUrlsField = provider === "flux2-pro" ? "input_urls" : "image_urls";
+      // flux-2/pro-image-to-image rejects a call outright without this
+      // ("aspect_ratio is required", confirmed live) — nano-banana-pro
+      // doesn't need it. "1:1" matches kie.ai's own docs example.
+      const aspectRatio = provider === "flux2-pro" ? "1:1" : undefined;
       const callBackUrl = `${process.env.APP_BASE_URL}/api/webhooks/kie?secret=${process.env.KIE_WEBHOOK_SECRET}`;
 
       submitOne = async (promptKey) => {
@@ -250,6 +263,7 @@ export async function POST(request: NextRequest) {
             prompt: promptText,
             imageUrls,
             imageUrlsField,
+            aspectRatio,
             callBackUrl,
           });
           await updateGenerationJob(job.id, { status: "processing", falRequestId: taskId });
