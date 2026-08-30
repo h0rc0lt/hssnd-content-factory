@@ -37,6 +37,18 @@ export interface KieCreateTaskInput {
    *  example uses "1:1"). nano-banana-pro and the "seedream/"-prefixed
    *  models didn't need it. Omit for models that don't require it. */
   aspectRatio?: string;
+  /** Same story as aspectRatio, one field later: flux-2/pro-image-to-image
+   *  also rejected the call with "resolution is required" once
+   *  aspect_ratio was added — kie.ai validates required fields one at a
+   *  time rather than listing every missing one in a single error, which
+   *  is why this got caught on a second live call instead of the first.
+   *  kie.ai's docs example uses "1K". */
+  resolution?: string;
+  /** Present in kie.ai's own flux-2/pro-image-to-image example (`false`)
+   *  but not yet confirmed required the way aspectRatio/resolution were —
+   *  included proactively from that same example to avoid a third
+   *  "X is required" round trip rather than waiting to hit it live. */
+  nsfwChecker?: boolean;
   callBackUrl: string;
 }
 
@@ -66,6 +78,8 @@ export async function submitKieTask(input: KieCreateTaskInput): Promise<KieCreat
             [input.imageUrlsField ?? "image_urls"]: input.imageUrls,
           }),
         ...(input.aspectRatio && { aspect_ratio: input.aspectRatio }),
+        ...(input.resolution && { resolution: input.resolution }),
+        ...(input.nsfwChecker !== undefined && { nsfw_checker: input.nsfwChecker }),
       },
     }),
   });

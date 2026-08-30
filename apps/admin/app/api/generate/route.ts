@@ -235,10 +235,16 @@ export async function POST(request: NextRequest) {
 
       const kieModel = provider === "nano-banana-pro" ? KIE_NANO_BANANA_PRO_MODEL : KIE_FLUX2_PRO_MODEL;
       const imageUrlsField = provider === "flux2-pro" ? "input_urls" : "image_urls";
-      // flux-2/pro-image-to-image rejects a call outright without this
-      // ("aspect_ratio is required", confirmed live) — nano-banana-pro
-      // doesn't need it. "1:1" matches kie.ai's own docs example.
+      // flux-2/pro-image-to-image rejects a call outright without these —
+      // "aspect_ratio is required" then, on the next live call after that
+      // was fixed, "resolution is required" too (confirmed via
+      // generation_jobs.error both times; kie.ai validates required
+      // fields one at a time rather than listing every missing one in a
+      // single error). nano-banana-pro needs none of this. Values match
+      // kie.ai's own docs example for this model exactly.
       const aspectRatio = provider === "flux2-pro" ? "1:1" : undefined;
+      const resolution = provider === "flux2-pro" ? "1K" : undefined;
+      const nsfwChecker = provider === "flux2-pro" ? false : undefined;
       const callBackUrl = `${process.env.APP_BASE_URL}/api/webhooks/kie?secret=${process.env.KIE_WEBHOOK_SECRET}`;
 
       submitOne = async (promptKey) => {
@@ -264,6 +270,8 @@ export async function POST(request: NextRequest) {
             imageUrls,
             imageUrlsField,
             aspectRatio,
+            resolution,
+            nsfwChecker,
             callBackUrl,
           });
           await updateGenerationJob(job.id, { status: "processing", falRequestId: taskId });
