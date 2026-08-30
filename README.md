@@ -165,21 +165,27 @@ wired to real Supabase data end to end:
   this app's other provider picks, which were chosen from research and
   only validated by live testing after the fact. Pricing is close to a
   wash (~$0.032/image vs plain Nano Banana's ~$0.02). The model id itself
-  needed two attempts: the first guess, `seedream/4-5-edit`, came back
-  from every real call with kie.ai's "model name not supported" error
-  (confirmed via `generation_jobs.error`) — but since `fal_request_id`
-  stayed null on all of them, kie.ai rejects an unrecognized model
-  synchronously before any task/credit is spent, so those failed calls
-  cost nothing. Currently set to `seedream/4-5-image-to-image`: kie.ai's
-  docs confirm `seedream/5-lite-image-to-image` verbatim (full curl
-  example, matching this app's own `image_urls` input shape) as the
-  reference-image variant of the newer Seedream 5 Lite tier, which
-  suggests `-image-to-image` (not `-edit`) is the real suffix for this
-  `seedream/`-prefixed naming family — `-edit` was only ever confirmed for
-  the differently-prefixed, older `bytedance/seedream-v4-edit`. Still not
-  directly confirmed for 4.5 itself; see `/api/generate`'s doc comment for
-  the confirmed-working fallback (`seedream/5-lite-image-to-image`) if
-  this guess is also wrong.
+  has burned two wrong guesses so far, both confirmed via
+  `generation_jobs.error` as kie.ai's "model name not supported", both
+  free (`fal_request_id` stayed null — kie.ai rejects an unrecognized
+  model synchronously before any task/credit is spent): `seedream/4-5-edit`
+  (mirrored the confirmed text-to-image slug's naming), then
+  `seedream/4-5-image-to-image` (kie.ai's docs confirm
+  `seedream/5-lite-image-to-image` verbatim as the newer Seedream 5 Lite
+  tier's reference-image variant, which looked like it'd generalize — it
+  doesn't, kie.ai's docs sidebar only lists "Seedream4.5 - Text to Image"
+  and "Seedream4.5 - Edit" as real 4.5 endpoints, no image-to-image
+  variant for 4.5 at all). Currently set to `seedream/4.5-edit` — a third
+  guess: the confirmed existence of a `docs.kie.ai/market/seedream/4-5-edit`
+  page suggests "edit" (the first guess's task-type suffix) was right all
+  along, so this swaps only the separator, hyphen (`4-5`) to dot (`4.5`),
+  on the theory that the page's URL slug and the API's `model` field don't
+  necessarily match character-for-character. Still not confirmed from the
+  primary source — `docs.kie.ai` is blocked by this environment's network
+  egress proxy, every direct fetch attempt has failed. See
+  `/api/generate`'s doc comment for the confirmed-working fallback
+  (`seedream/5-lite-image-to-image`, a newer tier) if this guess is also
+  wrong.
 
 This project's own testing surfaced two real bugs worth knowing about if
 something looks stuck: (1) `/api/lora/train` builds `images_data_url` by
